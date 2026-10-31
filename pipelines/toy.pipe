@@ -1,0 +1,25 @@
+# End-to-end check on procedural toy animations (about 10 minutes).
+#     ./psg run pipelines/toy.pipe
+
+set DATA data
+set MODEL checkpoints/toy
+
+stage build
+  cmd sh tools/build.sh train_gpu sample gpu_check
+
+stage dataset
+  cmd .venv/bin/python tools/make_toy_dataset.py --out sprites --per-class 200
+  cmd .venv/bin/python tools/prepare_animations.py --frames sprites --out ${DATA} --looping coin,potion,slime,sword
+  skip_if ${DATA}/meta.txt
+
+stage gpu_check
+  cmd ./gpu_check
+
+stage train
+  cmd ./train_gpu --data ${DATA} --out ${MODEL} --steps 2000
+
+stage sample
+  cmd ./sample --ckpt ${MODEL} --data ${DATA} --class slime --n 4 --frames 8 --out out/toy/samples.bin
+
+stage render
+  cmd .venv/bin/python tools/render.py --samples out/toy/samples.bin --palette ${DATA}/palette.txt --out out/toy

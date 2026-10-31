@@ -1,0 +1,32 @@
+# Duelyst: fetch and prepare the data once, train two model sizes one after the other,
+# then sample and render both so they can be compared.
+#     ./psg run pipelines/duelyst.pipe
+
+set DATA data_duelyst
+set UNITS raw/duelyst/public/duelyst-1.97.12/app/resources/units
+
+stage build
+  cmd sh tools/build.sh train_gpu sample
+
+stage fetch
+  cmd git clone --depth 1 --filter=blob:none --sparse https://github.com/tnantoka/duelyst-assets.git raw/duelyst
+  cmd git -C raw/duelyst sparse-checkout set --no-cone 'public/duelyst-1.97.12/app/resources/units/*.png' 'public/duelyst-1.97.12/app/resources/units/*.plist'
+  skip_if ${UNITS}
+
+stage prepare
+  cmd .venv/bin/python tools/prepare_animations.py --atlases ${UNITS} --out ${DATA}
+  skip_if ${DATA}/meta.txt
+
+stage train_small
+  cmd ./train_gpu --data ${DATA} --out checkpoints/duelyst_small --steps 8000 --dim 64 --layers 4
+
+stage train_large
+  cmd ./train_gpu --data ${DATA} --out checkpoints/duelyst_large --steps 20000 --dim 128 --layers 4 --lr 6e-4 --warmup 500
+
+stage sample_small
+  cmd ./sample --ckpt checkpoints/duelyst_small --data ${DATA} --class idle --n 4 --frames 10 --out out/duelyst_small/samples.bin
+  cmd .venv/bin/python tools/render.py --samples out/duelyst_small/samples.bin --palette ${DATA}/palette.txt --out out/duelyst_small
+
+stage sample_large
+  cmd ./sample --ckpt checkpoints/duelyst_large --data ${DATA} --class idle --n 4 --frames 10 --out out/duelyst_large/samples.bin
+  cmd .venv/bin/python tools/render.py --samples out/duelyst_large/samples.bin --palette ${DATA}/palette.txt --out out/duelyst_large

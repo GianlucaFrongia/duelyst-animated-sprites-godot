@@ -1,0 +1,28 @@
+# ctx on Duelyst + Hull Rupture + Songs of Conquest (the animations that fit 64x64) with Muon (weight matrices) + AdamW (the rest), batch 42.
+# 38000 steps x 42 = 1.6M examples, 10x the budget of pipelines/duelyst_hr.pipe (20000 x 8).
+# Batch 42 keeps the GPU buffers under 2 GB (~1.9 GB), ~143 pairs/s on the M2 Pro, about 3 hours in total.
+# Muon lr 1e-2 was the best of two tried at batch 32 (close to 42); it is not tuned for batch 42.
+#     ./psg run pipelines/duelyst_hr_muon.pipe
+
+set DATA data_duelyst_hr_soc
+set UNITS raw/duelyst/public/duelyst-1.97.12/app/resources/units
+set SOC "/Users/chicho/Library/Application Support/Steam/steamapps/common/SongsOfConquest/SongsOfConquest.app/Contents/Resources/Data/StreamingAssets/aa/StandaloneOSX"
+
+stage build
+  cmd sh tools/build.sh train_gpu sample
+
+stage export_soc
+  cmd uv run --python 3.12 --with UnityPy python -I tools/export_unity_frames.py ${SOC} raw/songsofconquest_frames
+  skip_if raw/songsofconquest_frames/idle
+
+stage prepare
+  cmd sh tools/merge_frames.sh raw/frames_all raw/hullrupture raw/songsofconquest_frames
+  cmd .venv/bin/python tools/prepare_animations.py --atlases ${UNITS} --frames raw/frames_all --classes attack,breathing,death,hit,idle,run --out ${DATA}
+  skip_if ${DATA}/meta.txt
+
+stage train
+  cmd ./train_gpu --data ${DATA} --out checkpoints/duelyst_hr_muon --steps 38000 --batch 42 --dim 128 --layers 4 --muon --lr 1e-2 --warmup 2000 --log-every 10 --save-every 1000
+
+stage sample
+  cmd ./sample --ckpt checkpoints/duelyst_hr_muon --data ${DATA} --class idle --n 4 --frames 10 --out out/duelyst_hr_muon/samples.bin
+  cmd .venv/bin/python tools/render.py --samples out/duelyst_hr_muon/samples.bin --palette ${DATA}/palette.txt --out out/duelyst_hr_muon

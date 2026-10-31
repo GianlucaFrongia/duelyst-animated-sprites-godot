@@ -1,0 +1,22 @@
+sprites/
+data/
+checkpoints/
+out/
+.venv/
+train
+train_gpu
+sample
+raw/
+logs/
+data_*/
+runs/
+*.tmp
+# compiled binaries (tools/build.sh)
+/train_gpu-*
+/sample-*
+/gpu_check
+/gpu_check-*
+/grpo-*
+/psg
+__pycache__/
+.DS_Store

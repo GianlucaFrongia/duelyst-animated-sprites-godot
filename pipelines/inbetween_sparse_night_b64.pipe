@@ -1,0 +1,18 @@
+# inbetween_sparse_night at batch 64 for the RX 6800 XT (16 GB): the same 1.18M training pairs
+# as batch 42 x 28000 steps, warmup scaled to the same number of pairs, lr unchanged.
+# ~178 pairs/s on the 6800 XT (batch 42: ~165), so about 1h50.
+#     ./psg run pipelines/inbetween_sparse_night_b64.pipe
+
+name inbetween_sparse_night_b64
+set DIB data_duelyst_hr_soc_ib_val
+set IBS --temperature 1.0 --choice-noise 10
+
+stage build
+  cmd ARCH=inbetween_sparse sh tools/build.sh train_gpu sample
+
+stage train
+  cmd ./train_gpu-inbetween_sparse --data ${DIB} --out checkpoints/inbetween_sparse_night_b64 --steps 18375 --batch 64 --warmup 656 --dim 256 --layers 6 --heads 8 --muon --lr 1e-2 --context-drop 0 --history-drop 0 --log-every 25 --save-every 1250 --val-every 1250
+
+stage sample
+  cmd ./sample-inbetween_sparse --ckpt checkpoints/inbetween_sparse_night_b64 --data ${DIB}/val --class idle --init 35 --n 4 --frames 9 ${IBS} --out out/inbetween_sparse_night_b64/samples.bin
+  cmd .venv/bin/python tools/render.py --samples out/inbetween_sparse_night_b64/samples.bin --palette ${DIB}/palette.txt --out out/inbetween_sparse_night_b64

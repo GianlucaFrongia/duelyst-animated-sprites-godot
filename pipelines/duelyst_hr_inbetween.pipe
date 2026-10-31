@@ -1,0 +1,22 @@
+# In-betweening on Duelyst + Hull Rupture: two keyframes in, the frame halfway between out.
+# Keyframe triples with gaps 2, 4 and 8, so a 9-frame sheet can be filled from its two ends.
+# Batch 64 (fastest on the M2 Pro); 2500 x 64 = 160k examples. No context dropout: the
+# keyframes are always given.
+#     ./psg run pipelines/duelyst_hr_inbetween.pipe
+
+set DATA data_duelyst_hr_ib
+set UNITS raw/duelyst/public/duelyst-1.97.12/app/resources/units
+
+stage build
+  cmd ARCH=inbetween sh tools/build.sh train_gpu sample
+
+stage prepare
+  cmd .venv/bin/python tools/prepare_animations.py --atlases ${UNITS} --frames raw/hullrupture --classes attack,breathing,death,hit,idle,run --inbetween --out ${DATA}
+  skip_if ${DATA}/meta.txt
+
+stage train
+  cmd ./train_gpu-inbetween --data ${DATA} --out checkpoints/duelyst_hr_inbetween --steps 2500 --batch 64 --dim 128 --layers 6 --heads 4 --lr 1.5e-3 --warmup 150 --context-drop 0 --history-drop 0 --log-every 25 --save-every 250
+
+stage sample
+  cmd ./sample-inbetween --ckpt checkpoints/duelyst_hr_inbetween --data ${DATA} --class idle --init 18250 --n 4 --frames 9 --temperature 1.0 --choice-noise 10 --out out/duelyst_hr_inbetween/samples.bin
+  cmd .venv/bin/python tools/render.py --samples out/duelyst_hr_inbetween/samples.bin --palette ${DATA}/palette.txt --out out/duelyst_hr_inbetween

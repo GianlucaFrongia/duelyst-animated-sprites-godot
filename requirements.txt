@@ -1,0 +1,4 @@
+mojo==1.2.0
+max==26.7.0
+pillow
+numpy

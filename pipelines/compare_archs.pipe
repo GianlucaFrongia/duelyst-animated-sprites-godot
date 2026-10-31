@@ -1,0 +1,66 @@
+# All four architectures, ~30 min of training each on the same frames (Duelyst + Hull Rupture +
+# Songs of Conquest), then held-out validation loss, samples and one comparison.
+# Same settings for all (dim 128, 4 layers, 4 heads, Muon lr 1e-2, batch 42); steps are sized
+# to ~30 min from measured speed on the M2 Pro (ctx 143, ctx2 and inbetween 133 pairs/s, 5%
+# warmup), and stacked, whose 2048-token canvas is much slower, uses train_gpu's 30-minute
+# --minutes budget instead. Every dataset holds out the same 34 units in val/ (split by unit name), so the
+# validation losses are on units no model saw. inbetween predicts the frame between two
+# keyframes, an easier task than the next frame, so compare its loss with care.
+# Samples open with the same held-out idle frame (example 17 of the ctx/stacked val set; 28
+# and 35 are the matching examples in the ctx2 and inbetween val sets).
+#     ./psg run pipelines/compare_archs.pipe
+
+name compare_archs
+set UNITS raw/duelyst/public/duelyst-1.97.12/app/resources/units
+set CLASSES attack,breathing,death,hit,idle,run
+set D2 data_duelyst_hr_soc_val
+set D3 data_duelyst_hr_soc_k3_val
+set DIB data_duelyst_hr_soc_ib_val
+set COMMON --dim 128 --layers 4 --heads 4 --muon --lr 1e-2 --log-every 25 --save-every 1000 --val-every 500
+set OUT out/compare
+
+stage build
+  cmd sh tools/build.sh train_gpu sample && ARCH=ctx2 sh tools/build.sh train_gpu sample && ARCH=inbetween sh tools/build.sh train_gpu sample && ARCH=stacked sh tools/build.sh train_gpu sample
+
+stage prepare_pairs
+  cmd .venv/bin/python tools/prepare_animations.py --atlases ${UNITS} --frames raw/frames_all --classes ${CLASSES} --out ${D2}
+  skip_if ${D2}/val/meta.txt
+
+stage prepare_triples
+  cmd .venv/bin/python tools/prepare_animations.py --atlases ${UNITS} --frames raw/frames_all --classes ${CLASSES} --context 2 --out ${D3}
+  skip_if ${D3}/val/meta.txt
+
+stage prepare_inbetween
+  cmd .venv/bin/python tools/prepare_animations.py --atlases ${UNITS} --frames raw/frames_all --classes ${CLASSES} --inbetween --out ${DIB}
+  skip_if ${DIB}/val/meta.txt
+
+stage train_ctx
+  cmd ./train_gpu --data ${D2} --out checkpoints/cmp_ctx --steps 6100 --batch 42 --warmup 300 ${COMMON}
+
+stage train_ctx2
+  cmd ./train_gpu-ctx2 --data ${D3} --out checkpoints/cmp_ctx2 --steps 5700 --batch 42 --warmup 285 ${COMMON}
+
+stage train_inbetween
+  cmd ./train_gpu-inbetween --data ${DIB} --out checkpoints/cmp_inbetween --steps 5700 --batch 42 --warmup 285 --context-drop 0 --history-drop 0 ${COMMON}
+
+stage train_stacked
+  cmd ./train_gpu-stacked --data ${D2} --out checkpoints/cmp_stacked --minutes 30 --batch 42 --warmup 150 ${COMMON}
+
+stage sample_ctx
+  cmd ./sample --ckpt checkpoints/cmp_ctx --data ${D2}/val --class idle --init 17 --n 4 --frames 10 --out ${OUT}/ctx/samples.bin
+  cmd .venv/bin/python tools/render.py --samples ${OUT}/ctx/samples.bin --palette ${D2}/palette.txt --out ${OUT}/ctx
+
+stage sample_ctx2
+  cmd ./sample-ctx2 --ckpt checkpoints/cmp_ctx2 --data ${D3}/val --class idle --init 28 --n 4 --frames 10 --out ${OUT}/ctx2/samples.bin
+  cmd .venv/bin/python tools/render.py --samples ${OUT}/ctx2/samples.bin --palette ${D3}/palette.txt --out ${OUT}/ctx2
+
+stage sample_inbetween
+  cmd ./sample-inbetween --ckpt checkpoints/cmp_inbetween --data ${DIB}/val --class idle --init 35 --n 4 --frames 9 --temperature 1.0 --choice-noise 10 --out ${OUT}/inbetween/samples.bin
+  cmd .venv/bin/python tools/render.py --samples ${OUT}/inbetween/samples.bin --palette ${DIB}/palette.txt --out ${OUT}/inbetween
+
+stage sample_stacked
+  cmd ./sample-stacked --ckpt checkpoints/cmp_stacked --data ${D2}/val --class idle --init 17 --n 4 --frames 10 --out ${OUT}/stacked/samples.bin
+  cmd .venv/bin/python tools/render.py --samples ${OUT}/stacked/samples.bin --palette ${D2}/palette.txt --out ${OUT}/stacked
+
+stage compare
+  cmd .venv/bin/python tools/compare_runs.py ${OUT} runs/compare_archs

@@ -1,0 +1,43 @@
+# Three DeepSeek ideas on inbetween, each against the 30-minute inbetween of
+# pipelines/compare_archs.pipe (run that first; same data, settings and held-out units):
+#   inbetween_wsd     warmup-stable-decay learning rate (DeepSeek LLM) instead of cosine, same 5700 steps
+#   inbetween_sparse  band-sparse attention (NSA's sliding window), 30 minutes (more steps: it is faster)
+#   grpo_inbetween    the 30-minute inbetween fine-tuned with GRPO (DeepSeekMath), ~30 min; its log has
+#                     the held-out reward (foreground pixel accuracy of drawn frames) before and after
+# The overnight run that follows is pipelines/inbetween_night.pipe.
+#     ./psg run pipelines/deepseek_ideas.pipe
+
+name deepseek_ideas
+set DIB data_duelyst_hr_soc_ib_val
+set IBS --temperature 1.0 --choice-noise 10
+set COMMON --dim 128 --layers 4 --heads 4 --muon --lr 1e-2 --context-drop 0 --history-drop 0 --log-every 25 --save-every 1000 --val-every 500
+set OUT out/compare
+
+stage build
+  cmd ARCH=inbetween sh tools/build.sh train_gpu sample grpo && ARCH=inbetween_sparse sh tools/build.sh train_gpu sample
+
+stage train_inbetween_wsd
+  cmd ./train_gpu-inbetween --data ${DIB} --out checkpoints/cmp_inbetween_wsd --steps 5700 --batch 42 --warmup 285 --decay 0.2 ${COMMON}
+
+stage train_inbetween_sparse
+  cmd ./train_gpu-inbetween_sparse --data ${DIB} --out checkpoints/cmp_inbetween_sparse --minutes 30 --batch 42 --warmup 285 ${COMMON}
+
+stage grpo_inbetween
+  cmd ./grpo-inbetween --ckpt checkpoints/cmp_inbetween --data ${DIB} --out checkpoints/cmp_inbetween_grpo --iters 150 --lr 3e-5 --eval-every 25 ${IBS}
+  gpu yes
+
+stage sample_inbetween_wsd
+  cmd ./sample-inbetween --ckpt checkpoints/cmp_inbetween_wsd --data ${DIB}/val --class idle --init 35 --n 4 --frames 9 ${IBS} --out ${OUT}/inbetween_wsd/samples.bin
+  cmd .venv/bin/python tools/render.py --samples ${OUT}/inbetween_wsd/samples.bin --palette ${DIB}/palette.txt --out ${OUT}/inbetween_wsd
+
+stage sample_inbetween_sparse
+  cmd ./sample-inbetween_sparse --ckpt checkpoints/cmp_inbetween_sparse --data ${DIB}/val --class idle --init 35 --n 4 --frames 9 ${IBS} --out ${OUT}/inbetween_sparse/samples.bin
+  cmd .venv/bin/python tools/render.py --samples ${OUT}/inbetween_sparse/samples.bin --palette ${DIB}/palette.txt --out ${OUT}/inbetween_sparse
+
+stage sample_inbetween_grpo
+  cmd ./sample-inbetween --ckpt checkpoints/cmp_inbetween_grpo --data ${DIB}/val --class idle --init 35 --n 4 --frames 9 ${IBS} --out ${OUT}/inbetween_grpo/samples.bin
+  cmd .venv/bin/python tools/render.py --samples ${OUT}/inbetween_grpo/samples.bin --palette ${DIB}/palette.txt --out ${OUT}/inbetween_grpo
+
+stage compare
+  cmd .venv/bin/python tools/compare_runs.py ${OUT} runs/compare_archs runs/compare_archs_finish runs/deepseek_ideas
+
