@@ -18,17 +18,17 @@ Ubuntu 24.04 installed natively (dual boot) is the simplest; WSL also works but 
 ## 2. Get the project
 
 ```bash
-git clone git@github.com:GianlucaFrongia/pixel-sprite-gen.git
+git clone https://github.com/GianlucaFrongia/pixel-art-training.git
 ```
 
 Datasets, checkpoints and `raw/` are not in git: copy them over (for example
-`rsync -av data_duelyst_hr_soc_ib_val pc:pixel-sprite-gen/`, 0.8 GB, the inbetween dataset) or
+`rsync -av data_duelyst_hr_soc_ib_val pc:pixel-art-training/maskgit/`, 0.8 GB, the inbetween dataset) or
 rebuild them with `tools/prepare_animations.py`.
 
 ## 3. Build and check (on the PC)
 
 ```bash
-cd pixel-sprite-gen
+cd pixel-art-training/maskgit
 python3 -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 sh tools/build.sh psg            # the GPU target comes from rocminfo (ACCEL=gfx1030 to force it)

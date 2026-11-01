@@ -1,4 +1,4 @@
-# pixel-sprite-gen
+# maskgit: pixel-sprite-gen
 
 A small generator for **animated** 64×64 pixel-art sprite sheets, with a **hand-written training pipeline in Mojo**: no ML framework, no autograd. Every forward pass has a matching backward pass written by hand, checked against finite differences.
 
