@@ -1,0 +1,18 @@
+# inbetween_sparse overnight: dim 256, 6 layers, 8 heads (5.3M parameters), band-sparse attention.
+# ~53 pairs/s measured, so 28000 steps take about 6.5 hours (~18 passes over the data).
+# Compare with checkpoints/inbetween_night_d128 (dim 128 dense, 7 hours, val 0.140).
+#     ./psg run pipelines/inbetween_sparse_night.pipe
+
+name inbetween_sparse_night
+set DIB data_duelyst_hr_soc_ib_val
+set IBS --temperature 1.0 --choice-noise 10
+
+stage build
+  cmd ARCH=inbetween_sparse sh tools/build.sh train_gpu sample
+
+stage train
+  cmd ./train_gpu-inbetween_sparse --data ${DIB} --out checkpoints/inbetween_sparse_night --steps 28000 --batch 42 --warmup 1000 --dim 256 --layers 6 --heads 8 --muon --lr 1e-2 --context-drop 0 --history-drop 0 --log-every 25 --save-every 2000 --val-every 2000
+
+stage sample
+  cmd ./sample-inbetween_sparse --ckpt checkpoints/inbetween_sparse_night --data ${DIB}/val --class idle --init 35 --n 4 --frames 9 ${IBS} --out out/inbetween_sparse_night/samples.bin
+  cmd .venv/bin/python tools/render.py --samples out/inbetween_sparse_night/samples.bin --palette ${DIB}/palette.txt --out out/inbetween_sparse_night

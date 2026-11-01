@@ -1,0 +1,23 @@
+# inbetween_dyt_hilbert (DyT + Hilbert token order) against inbetween_hilbert of pipelines/hilbert.pipe:
+# same data, settings, 40 minutes and sampling, so the only difference is DyT in place of layer norm.
+#     ./psg run pipelines/dyt_hilbert.pipe
+
+name dyt_hilbert
+set DIB data_duelyst_hr_soc_ib_val
+set IBS --temperature 0.5 --choice-noise 1
+set COMMON --dim 128 --layers 4 --heads 4 --muon --lr 1e-2 --context-drop 0 --history-drop 0 --log-every 25 --save-every 1000 --val-every 500
+set OUT out/compare
+
+stage build
+  cmd ARCH=inbetween_dyt_hilbert sh tools/build.sh train_gpu sample
+
+stage train_inbetween_dyt_hilbert
+  cmd ./train_gpu-inbetween_dyt_hilbert --data ${DIB} --out checkpoints/cmp_inbetween_dyt_hilbert --minutes 40 --batch 42 --warmup 285 ${COMMON}
+
+# --init 63: its keyframes are really 8 frames apart, so a 9-frame fill matches the data
+stage sample_inbetween_dyt_hilbert
+  cmd ./sample-inbetween_dyt_hilbert --ckpt checkpoints/cmp_inbetween_dyt_hilbert --data ${DIB}/val --class idle --init 63 --n 4 --frames 9 ${IBS} --out ${OUT}/inbetween_dyt_hilbert/samples.bin
+  cmd .venv/bin/python tools/render.py --samples ${OUT}/inbetween_dyt_hilbert/samples.bin --palette ${DIB}/palette.txt --out ${OUT}/inbetween_dyt_hilbert
+
+stage compare
+  cmd .venv/bin/python tools/compare_runs.py ${OUT} runs/compare_archs runs/compare_archs_finish runs/deepseek_ideas runs/dyt runs/hilbert runs/dyt_hilbert

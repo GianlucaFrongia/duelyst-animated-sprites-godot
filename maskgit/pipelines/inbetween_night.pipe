@@ -1,0 +1,18 @@
+# inbetween overnight: 7 hours at dim 256, 6 layers, 8 heads (5.3M parameters, 5.3 GB at batch
+# 42, ~38 pairs/s measured, about 15 passes over the data), then samples on the held-out
+# idle frame used by pipelines/compare_archs.pipe.
+#     ./psg run pipelines/inbetween_night.pipe
+
+name inbetween_night
+set DIB data_duelyst_hr_soc_ib_val
+set IBS --temperature 1.0 --choice-noise 10
+
+stage build
+  cmd ARCH=inbetween sh tools/build.sh train_gpu sample
+
+stage train
+  cmd ./train_gpu-inbetween --data ${DIB} --out checkpoints/inbetween_night --minutes 420 --batch 42 --warmup 2000 --dim 256 --layers 6 --heads 8 --muon --lr 1e-2 --context-drop 0 --history-drop 0 --log-every 25 --save-every 2000 --val-every 2000
+
+stage sample
+  cmd ./sample-inbetween --ckpt checkpoints/inbetween_night --data ${DIB}/val --class idle --init 35 --n 4 --frames 9 ${IBS} --out out/inbetween_night/samples.bin
+  cmd .venv/bin/python tools/render.py --samples out/inbetween_night/samples.bin --palette ${DIB}/palette.txt --out out/inbetween_night

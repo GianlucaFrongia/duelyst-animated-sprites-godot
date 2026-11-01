@@ -10,7 +10,7 @@
 # Image I/O goes through Python (Pillow, NumPy, imageio) via Mojo's Python interop.
 #
 # Usage:
-#   mojo run training/export_dataset.mojo [--out DIR] [--trigger WORD]
+#   mojo run lora/export_dataset.mojo [--out DIR] [--trigger WORD]
 #       [--video-size 512] [--cell-size 256] [--grid-max 1024] [--fps 9] [--bg 64,64,64]
 #       [--no-fx] [--no-video] [--no-grid] [--frames] [--limit N] [--only SUBSTR]
 
@@ -357,7 +357,7 @@ def place_frames(
 
 def main() raises:
     var cfg = Config(
-        ".", "training/dataset", "dlystsprite", 512, 256, 1024, 9, "64,64,64",
+        "data/duelyst", "lora/dataset", "dlystsprite", 512, 256, 1024, 9, "64,64,64",
         True, True, True, False, 0, "",
     )
     var args = argv()

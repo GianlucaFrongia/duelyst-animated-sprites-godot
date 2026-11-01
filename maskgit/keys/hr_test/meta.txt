@@ -1,0 +1,6 @@
+N 1
+V 64
+C 6
+S 64
+K 3
+O inbetween

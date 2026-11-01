@@ -6,14 +6,14 @@
 # subprocesses: cache latents -> cache text encoder outputs -> train.
 #
 # Wan 2.1 1.3B (video clips):
-#   mojo run training/train_lora.mojo --model wan --musubi ~/musubi-tuner \
-#       --dataset training/dataset --dit models/wan2.1_t2v_1.3B_bf16.safetensors \
+#   mojo run lora/train_lora.mojo --model wan --musubi ~/musubi-tuner \
+#       --dataset lora/dataset --dit models/wan2.1_t2v_1.3B_bf16.safetensors \
 #       --vae models/wan_2.1_vae.safetensors \
 #       --t5 models/models_t5_umt5-xxl-enc-bf16.pth
 #
 # FLUX.2 [klein] base 4B (spritesheet grids):
-#   mojo run training/train_lora.mojo --model flux2 --musubi ~/musubi-tuner \
-#       --dataset training/dataset --dit models/flux2-klein-base-4b.safetensors \
+#   mojo run lora/train_lora.mojo --model flux2 --musubi ~/musubi-tuner \
+#       --dataset lora/dataset --dit models/flux2-klein-base-4b.safetensors \
 #       --vae models/ae.safetensors \
 #       --text-encoder models/qwen3-4b/model-00001-of-00002.safetensors
 #
@@ -64,8 +64,8 @@ def check_torch() raises:
 def main() raises:
     var model = String("wan")
     var musubi = String("")
-    var dataset = String("training/dataset")
-    var work = String("training/lora_work")
+    var dataset = String("lora/dataset")
+    var work = String("lora/lora_work")
     var python = String("python")
     var dit = String("")
     var vae = String("")

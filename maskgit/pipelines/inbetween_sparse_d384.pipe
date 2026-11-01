@@ -1,0 +1,18 @@
+# inbetween_sparse at dim 384 x 8 layers (15M params, head size 32) for a ~6h run on the RX 6800 XT.
+# dim 256 x 6 beat dim 128 at a third of the pairs, so this tests the next width step.
+# ~78 pairs/s at batch 64, so 25000 steps (1.6M pairs) take about 5h50.
+#     ./psg run pipelines/inbetween_sparse_d384.pipe
+
+name inbetween_sparse_d384
+set DIB data_duelyst_hr_soc_ib_val
+set IBS --temperature 0.5 --choice-noise 1
+
+stage build
+  cmd ARCH=inbetween_sparse sh tools/build.sh train_gpu sample
+
+stage train
+  cmd ./train_gpu-inbetween_sparse --data ${DIB} --out checkpoints/inbetween_sparse_d384 --steps 25000 --batch 64 --warmup 1000 --dim 384 --layers 8 --heads 12 --muon --lr 1e-2 --context-drop 0 --history-drop 0 --log-every 25 --save-every 1250 --val-every 1250
+
+stage sample
+  cmd ./sample-inbetween_sparse --ckpt checkpoints/inbetween_sparse_d384 --data ${DIB}/val --class idle --init 35 --n 4 --frames 9 ${IBS} --out out/inbetween_sparse_d384/samples.bin
+  cmd .venv/bin/python tools/render.py --samples out/inbetween_sparse_d384/samples.bin --palette ${DIB}/palette.txt --out out/inbetween_sparse_d384

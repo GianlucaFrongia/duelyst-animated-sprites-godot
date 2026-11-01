@@ -11,7 +11,7 @@
 #   6. write frames/, a horizontal strip PNG and a Godot SpriteFrames .tres
 #
 # Usage:
-#   mojo run training/postprocess.mojo INPUT --out DIR [--name attack]
+#   mojo run lora/postprocess.mojo INPUT --out DIR [--name attack]
 #       [--grid 5x5] [--factor 4] [--colors 64] [--bg 64,64,64] [--tol 16]
 #       [--fps 9] [--res-dir res://generated/]
 #
@@ -76,7 +76,7 @@ def flood_background(
 
 def main() raises:
     var input = String("")
-    var out = String("training/generated")
+    var out = String("lora/generated")
     var name = String("attack")
     var grid_cols = 0
     var grid_rows = 0

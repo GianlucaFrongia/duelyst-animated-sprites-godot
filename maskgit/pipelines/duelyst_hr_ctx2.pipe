@@ -1,0 +1,21 @@
+# ctx2 (two context frames) on Duelyst + Hull Rupture, as frame triples.
+# Batch 64 (4 GB of buffers) ran faster than batch 8 (~34 frames/s vs ~27).
+# 2500 steps x 64 = the same 160k examples as a 20000 x 8 run; lr scaled up for the bigger batch.
+#     ./psg run pipelines/duelyst_hr_ctx2.pipe
+
+set DATA data_duelyst_hr_k3
+set UNITS raw/duelyst/public/duelyst-1.97.12/app/resources/units
+
+stage build
+  cmd ARCH=ctx2 sh tools/build.sh train_gpu sample
+
+stage prepare
+  cmd .venv/bin/python tools/prepare_animations.py --atlases ${UNITS} --frames raw/hullrupture --classes attack,breathing,death,hit,idle,run --context 2 --out ${DATA}
+  skip_if ${DATA}/meta.txt
+
+stage train
+  cmd ./train_gpu-ctx2 --data ${DATA} --out checkpoints/duelyst_hr_ctx2 --steps 2500 --batch 64 --dim 128 --layers 6 --heads 4 --lr 1.5e-3 --warmup 150 --log-every 25 --save-every 250
+
+stage sample
+  cmd ./sample-ctx2 --ckpt checkpoints/duelyst_hr_ctx2 --data ${DATA} --class idle --init 8349 --n 4 --frames 10 --out out/duelyst_hr_ctx2/samples.bin
+  cmd .venv/bin/python tools/render.py --samples out/duelyst_hr_ctx2/samples.bin --palette ${DATA}/palette.txt --out out/duelyst_hr_ctx2

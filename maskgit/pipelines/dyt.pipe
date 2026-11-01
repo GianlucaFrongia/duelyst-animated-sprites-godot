@@ -1,0 +1,23 @@
+# DyT (Dynamic Tanh, "Transformers without Normalization") in place of layer norm, against
+# inbetween_sparse of pipelines/deepseek_ideas.pipe: same data, settings and held-out units,
+# and its 7733 steps (fixed, not 30 minutes: the trainer got faster since).
+#     ./psg run pipelines/dyt.pipe
+
+name dyt
+set DIB data_duelyst_hr_soc_ib_val
+set IBS --temperature 1.0 --choice-noise 10
+set COMMON --dim 128 --layers 4 --heads 4 --muon --lr 1e-2 --context-drop 0 --history-drop 0 --log-every 25 --save-every 1000 --val-every 500
+set OUT out/compare
+
+stage build
+  cmd ARCH=inbetween_dyt sh tools/build.sh train_gpu sample
+
+stage train_inbetween_dyt
+  cmd ./train_gpu-inbetween_dyt --data ${DIB} --out checkpoints/cmp_inbetween_dyt --steps 7733 --batch 42 --warmup 285 ${COMMON}
+
+stage sample_inbetween_dyt
+  cmd ./sample-inbetween_dyt --ckpt checkpoints/cmp_inbetween_dyt --data ${DIB}/val --class idle --init 35 --n 4 --frames 9 ${IBS} --out ${OUT}/inbetween_dyt/samples.bin
+  cmd .venv/bin/python tools/render.py --samples ${OUT}/inbetween_dyt/samples.bin --palette ${DIB}/palette.txt --out ${OUT}/inbetween_dyt
+
+stage compare
+  cmd .venv/bin/python tools/compare_runs.py ${OUT} runs/compare_archs runs/compare_archs_finish runs/deepseek_ideas runs/dyt
