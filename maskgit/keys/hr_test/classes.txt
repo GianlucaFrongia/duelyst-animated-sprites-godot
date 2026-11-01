@@ -1,0 +1,6 @@
+attack
+breathing
+death
+hit
+idle
+run

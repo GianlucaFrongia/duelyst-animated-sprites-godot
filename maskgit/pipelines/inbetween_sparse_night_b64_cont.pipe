@@ -1,0 +1,18 @@
+# Continue inbetween_sparse_night_b64 (dim 256 x 6) for ~3h more: --resume loads only the weights,
+# so the lr schedule restarts (short warmup, then decay again). ~178 pairs/s at batch 64.
+#     ./psg run pipelines/inbetween_sparse_night_b64_cont.pipe
+
+name inbetween_sparse_night_b64_cont
+set DIB data_duelyst_hr_soc_ib_val
+set IBS --temperature 0.5 --choice-noise 1
+
+stage build
+  cmd ARCH=inbetween_sparse sh tools/build.sh train_gpu sample
+
+stage train
+  cmd ./train_gpu-inbetween_sparse --data ${DIB} --resume checkpoints/inbetween_sparse_night_b64 --out checkpoints/inbetween_sparse_night_b64_cont --steps 29500 --batch 64 --warmup 300 --dim 256 --layers 6 --heads 8 --muon --lr 1e-2 --context-drop 0 --history-drop 0 --log-every 25 --save-every 1250 --val-every 1250
+
+# --init 63: its keyframes are really 8 frames apart, so a 9-frame fill matches the data
+stage sample
+  cmd ./sample-inbetween_sparse --ckpt checkpoints/inbetween_sparse_night_b64_cont --data ${DIB}/val --class idle --init 63 --n 4 --frames 9 ${IBS} --out out/inbetween_sparse_night_b64_cont/samples.bin
+  cmd .venv/bin/python tools/render.py --samples out/inbetween_sparse_night_b64_cont/samples.bin --palette ${DIB}/palette.txt --out out/inbetween_sparse_night_b64_cont
