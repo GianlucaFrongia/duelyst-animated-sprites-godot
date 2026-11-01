@@ -1,0 +1,7 @@
+# Mojo toolchain + Python packages used through Mojo's Python interop.
+mojo
+pillow
+numpy
+imageio
+imageio-ffmpeg
+# PyTorch is installed separately (ROCm or CUDA build), see README.md.
