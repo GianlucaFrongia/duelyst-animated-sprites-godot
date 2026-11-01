@@ -1,5 +1,5 @@
 # inbetween_sparse overnight: dim 256, 6 layers, 8 heads (5.3M parameters), band-sparse attention.
-# ~53 pairs/s on the M2 Pro, so 28000 steps take about 6.5 hours (~18 passes over the data).
+# ~53 pairs/s measured, so 28000 steps take about 6.5 hours (~18 passes over the data).
 # Compare with checkpoints/inbetween_night_d128 (dim 128 dense, 7 hours, val 0.140).
 #     ./psg run pipelines/inbetween_sparse_night.pipe
 

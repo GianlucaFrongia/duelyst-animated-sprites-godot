@@ -8,7 +8,7 @@
 # computes exactly that: one pass per unmasking step, the sample as target, the step's tokens as
 # the mask and the advantage as the per-example loss scale.
 #
-#     ./grpo --ckpt checkpoints/cmp_ctx --data data_duelyst_hr_soc_val --out checkpoints/cmp_ctx_grpo
+#     ./grpo-ctx --ckpt checkpoints/cmp_ctx --data data_duelyst_hr_soc_val --out checkpoints/cmp_ctx_grpo
 #
 # Reward: foreground pixel accuracy, the share of pixels where the sample or the real frame is
 # not transparent on which the two agree. Every --eval-every iterations it logs the mean reward
@@ -23,9 +23,10 @@ from std.os import makedirs
 from std.os.path import dirname, exists
 from std.random import seed, random_ui64
 from std.time import perf_counter_ns
-from arch.model import Config, Model, Work, T, NT, PP, NPIX, FRAME_PIX, tgt_pix, is_target
+from src.model import Config, Model, Work, T, NT, PP, NPIX, FRAME_PIX, tgt_pix, is_target
 from src.data import Dataset, TGT0, arg_str, arg_int, arg_float
-from arch.engine import Engine
+from src.engine import Engine
+from src.optim import Optimizer
 from sample import generate_frames
 
 
@@ -43,7 +44,7 @@ def reward(ids: List[Int], n: Int, real: List[UInt8], r0: Int) -> Float64:
     return Float64(same) / Float64(fg) if fg > 0 else 1.0
 
 
-def draw(mut m: Model, mut wk: Work, gen: Optional[Engine], ds: Dataset, ex: List[Int], reps: Int,
+def draw(mut m: Model, mut wk: Work, mut gen: Optional[Engine], ds: Dataset, ex: List[Int], reps: Int,
          mut ids: List[Int], mut commit: List[Int], rows: Int, cls: Int, use_cfg: Bool, n_steps: Int,
          temp: Float32, guidance: Float32, choice_noise: Float64) raises:
     """reps samples of the target frame of each example in ex (one class), canvas n = i * reps + j."""
@@ -56,7 +57,7 @@ def draw(mut m: Model, mut wk: Work, gen: Optional[Engine], ds: Dataset, ex: Lis
                     commit)
 
 
-def held_out(mut m: Model, mut wk: Work, gen: Optional[Engine], v: Dataset, groups: List[List[Int]],
+def held_out(mut m: Model, mut wk: Work, mut gen: Optional[Engine], v: Dataset, groups: List[List[Int]],
              cls: List[Int], mut ids: List[Int], mut commit: List[Int], rows: Int, use_cfg: Bool, n_steps: Int,
              temp: Float32, guidance: Float32, choice_noise: Float64) raises -> Float64:
     """Mean reward of one sample per held-out prompt, with the same draws every time."""
@@ -148,6 +149,7 @@ def main() raises:
     var u_gs = List[Float32](length=B, fill=0.0)
     var adv = List[Float64](length=B, fill=0.0)
     var t0 = perf_counter_ns()
+    var opt = Optimizer()  # AdamW
     for it in range(iters + 1):
         if vs and (it % eval_every == 0 or it == iters):
             var r = held_out(m, wk, gen, vs.value(), v_groups, v_cls, ids, commit, rows, use_cfg, n_steps, temp,
@@ -205,7 +207,7 @@ def main() raises:
             upd.forward(m)
             _ = upd.loss()
             upd.backward(m)
-        var norm = upd.dev.optimizer_step(lr, it + 1, 0.0, 1.0)
+        var norm = opt.step(upd.dev, lr, it + 1, 0.0, 1.0)
         upd.dev.store_params(m.w)
         gen.value().dev.load_params(m.w, m.decay)
 

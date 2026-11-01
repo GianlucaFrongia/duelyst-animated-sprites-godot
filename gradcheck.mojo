@@ -7,7 +7,7 @@
 # the analytic gradient with (loss(w + eps) - loss(w - eps)) / (2 eps).
 
 from std.random import seed, random_ui64, random_float64
-from arch.model import Config, Model, Work, forward, backward, masked_loss, T, PP, NPIX, tgt_pix
+from src.model import Config, Model, Work, forward, backward, masked_loss, T, PP, NPIX, tgt_pix
 
 
 def loss_at(mut m: Model, mut wk: Work, ids: List[Int], tgt: List[Int], mask: List[Bool],

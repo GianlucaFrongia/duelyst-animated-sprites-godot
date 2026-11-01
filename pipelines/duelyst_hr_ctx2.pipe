@@ -1,5 +1,5 @@
 # ctx2 (two context frames) on Duelyst + Hull Rupture, as frame triples.
-# Batch 64 keeps the M2 Pro busiest (~34 frames/s vs ~27 at batch 8; 4 GB of buffers).
+# Batch 64 (4 GB of buffers) ran faster than batch 8 (~34 frames/s vs ~27).
 # 2500 steps x 64 = the same 160k examples as a 20000 x 8 run; lr scaled up for the bigger batch.
 #     ./psg run pipelines/duelyst_hr_ctx2.pipe
 

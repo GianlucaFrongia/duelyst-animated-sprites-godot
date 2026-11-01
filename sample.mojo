@@ -4,9 +4,9 @@
 # context frames (--init). Every later frame is drawn with the previous frame(s) as context,
 # so a sheet of any length is built one frame at a time.
 #
-#     mojo build -O3 --target-accelerator apple-m2 sample.mojo -o sample
-#     ./sample --ckpt checkpoints/sprites --data data --class idle --n 4 --frames 8
-#     ./sample --ckpt checkpoints/sprites --data data --class idle --init 120   # animate a real frame
+#     sh tools/build.sh sample      # ./sample-ctx; ARCH=<name> for another architecture
+#     ./sample-ctx --ckpt checkpoints/sprites --data data --class idle --n 4 --frames 8
+#     ./sample-ctx --ckpt checkpoints/sprites --data data --class idle --init 120   # animate a real frame
 #     python tools/render.py --samples out/samples.bin --palette data/palette.txt --out out
 #
 # Several sheets are drawn in parallel on the GPU (conditional and unconditional passes in
@@ -18,9 +18,12 @@ from std.os import makedirs
 from std.os.path import dirname
 from std.random import seed, random_float64
 from std.time import perf_counter_ns
-from arch.model import Config, Model, Work, forward, T, NT, PP, NPIX, FRAME_PIX, IMG, INBETWEEN, tgt_pix, is_target
+from src.model import (
+    Config, Model, Work, forward_tokens, T, PP, NPIX, FRAME_PIX, IMG, INBETWEEN, CROP, tgt_pix, is_target,
+    full_tokens, token_order, crop_len, take_tokens,
+)
 from src.data import CF, TGT0, read_context, arg_str, arg_int, arg_float
-from arch.engine import Engine
+from src.engine import Engine
 
 
 def class_id(name: String, data_dir: String, C: Int) raises -> Int:
@@ -39,9 +42,10 @@ def class_id(name: String, data_dir: String, C: Int) raises -> Int:
 
 
 def batch_logits(mut m: Model, mut wk: Work, eng: Optional[Engine], ids: List[Int32], cls: List[Int32],
-                 rows: Int, mut out: List[Float32]) raises:
-    """Logits [rows, T, PP, V] for a batch of canvases."""
-    var tpv = T * PP * m.cfg.V
+                 rows: Int, rtoks: List[List[Int]], mut out: List[Float32]) raises:
+    """Logits [rows, n, PP, V] for a batch of canvases, row b running the n tokens rtoks[b]
+    (the engine must already run them: set_tokens)."""
+    var tpv = len(rtoks[0]) * PP * m.cfg.V
     if eng:
         ref e = eng.value()
         e.dev.upload_i(e.i_ids, ids)
@@ -54,19 +58,44 @@ def batch_logits(mut m: Model, mut wk: Work, eng: Optional[Engine], ids: List[In
     for b in range(rows):
         for i in range(NPIX):
             row[i] = Int(ids[b * NPIX + i])
-        forward(m, wk, row, Int(cls[b]))
+        forward_tokens(m, wk, row, Int(cls[b]), rtoks[b])
         for i in range(tpv):
             out[b * tpv + i] = wk.logits[i]
 
 
-def generate_frames(mut m: Model, mut wk: Work, eng: Optional[Engine], mut ids: List[Int], ns: Int,
+def generate_frames(mut m: Model, mut wk: Work, mut eng: Optional[Engine], mut ids: List[Int], ns: Int,
                     rows: Int, cls: Int, use_cfg: Bool, n_steps: Int, temp: Float32, guidance: Float32,
                     choice_noise: Float64, mut commit: List[Int]) raises:
     """Draws the target frame (bottom half) of each of the ns canvases in ids, given the
     context frame in the top half. Batch rows [0, rows/2) are conditional, the rest unconditional.
-    commit[n * T + t] gets the step that fixed token t of canvas n (-1: context, never masked)."""
+    commit[n * T + t] gets the step that fixed token t of canvas n (-1: context, never masked).
+    With CROP only the target tokens near the context frames' sprites are drawn (the same count n
+    for every canvas, see token_order); the rest of the frame stays transparent."""
     var V = m.cfg.V
-    var tpv = T * PP * V
+    var nr = T  # tokens run per canvas
+    var rtoks = List[List[Int]]()  # per batch row
+    comptime if CROP >= 0:
+        var orders = List[List[Int]]()
+        var need = 0
+        for n in range(ns):
+            var order = List[Int](length=T, fill=0)
+            need = max(need, token_order(ids, n * NPIX, V, order))
+            orders.append(order^)
+        nr = crop_len(need)
+        for b in range(rows):
+            var toks = List[Int]()
+            take_tokens(orders[b % (rows // 2) % ns if use_cfg else b % ns], nr, toks)
+            rtoks.append(toks^)
+    else:
+        for _ in range(rows):
+            rtoks.append(full_tokens())
+    if eng:
+        var flat = List[Int32](capacity=rows * nr)
+        for b in range(rows):
+            for r in range(nr):
+                flat.append(Int32(rtoks[b][r]))
+        eng.value().set_tokens(flat, nr)
+    var tpv = nr * PP * V
     var half = rows // 2 if use_cfg else rows
     var lg = List[Float32](length=rows * tpv, fill=0.0)
     var ids32 = List[Int32](length=rows * NPIX, fill=Int32(V))
@@ -78,13 +107,23 @@ def generate_frames(mut m: Model, mut wk: Work, eng: Optional[Engine], mut ids: 
     var masked = List[Bool](length=ns * T, fill=False)
     var conf = List[Float64](length=T, fill=0.0)
     var probs = List[Float32](length=V, fill=0.0)
+    var n_masked = 0  # target tokens run per canvas (the same for every canvas)
+    for r in range(nr):
+        if is_target(rtoks[0][r]):
+            n_masked += 1
     for n in range(ns):
         for i in range(TGT0, NPIX):
-            ids[n * NPIX + i] = V
+            ids[n * NPIX + i] = 0 if CROP >= 0 else V  # what isn't drawn stays transparent
         for t in range(T):
-            masked[n * T + t] = is_target(t)
+            masked[n * T + t] = False
             commit[n * T + t] = -1
-    var n_masked = NT
+        for r in range(nr):
+            var t = rtoks[n][r]
+            masked[n * T + t] = is_target(t)
+            if is_target(t):
+                for k in range(PP):
+                    ids[n * NPIX + tgt_pix(t, k)] = V
+    var n_sel = n_masked
 
     for s in range(n_steps):
         for n in range(ns):
@@ -92,11 +131,11 @@ def generate_frames(mut m: Model, mut wk: Work, eng: Optional[Engine], mut ids: 
                 ids32[n * NPIX + i] = Int32(ids[n * NPIX + i])
                 if use_cfg:
                     ids32[(half + n) * NPIX + i] = Int32(ids[n * NPIX + i])
-        batch_logits(m, wk, eng, ids32, cls32, rows, lg)
+        batch_logits(m, wk, eng, ids32, cls32, rows, rtoks, lg)
         var progress = Float64(s + 1) / Float64(n_steps)
 
         # How many target tokens stay masked after this step (cosine schedule).
-        var keep = Int(cos(1.5707963267948966 * progress) * Float64(NT))
+        var keep = Int(cos(1.5707963267948966 * progress) * Float64(n_sel))
         if s == n_steps - 1:
             keep = 0
         keep = min(keep, n_masked - 1)
@@ -106,12 +145,13 @@ def generate_frames(mut m: Model, mut wk: Work, eng: Optional[Engine], mut ids: 
             var oc = n * tpv
             var ou = (half + n) * tpv
             # Propose pixels for every masked token and score the token's confidence.
-            for t in range(T):
+            for r in range(nr):
+                var t = rtoks[n][r]
                 if not masked[n * T + t]:
                     continue
                 var c: Float64 = 0.0
                 for k in range(PP):
-                    var o = (t * PP + k) * V
+                    var o = (r * PP + k) * V
                     var mx: Float32 = -1e30
                     for j in range(V):
                         var l = lg[oc + o + j]
@@ -156,7 +196,29 @@ def generate_frames(mut m: Model, mut wk: Work, eng: Optional[Engine], mut ids: 
         n_masked = keep
 
 
-def fill_inbetween(mut m: Model, mut wk: Work, eng: Optional[Engine], mut ids: List[Int],
+def fill_sequential(mut m: Model, mut wk: Work, mut eng: Optional[Engine], mut ids: List[Int],
+                    mut sheets: List[UInt8], init_px: List[Int], ns: Int, n_frames: Int, rows: Int, cls: Int,
+                    use_cfg: Bool, n_steps: Int, temp: Float32, guidance: Float32, choice_noise: Float64) raises:
+    """Draws every sheet's frames one at a time, each from the frame(s) before it. With init_px
+    (--init), the example's context frames open the sheet in place of drawn frames."""
+    var commit = List[Int](length=ns * T, fill=0)
+    var seeds = CF if len(init_px) > 0 else 0
+    for f in range(n_frames):
+        if f < seeds:  # a given frame goes where a drawn frame would land
+            for n in range(ns):
+                for i in range(FRAME_PIX):
+                    ids[n * NPIX + TGT0 + i] = init_px[f * FRAME_PIX + i]
+        else:
+            generate_frames(m, wk, eng, ids, ns, rows, cls, use_cfg, n_steps, temp, guidance, choice_noise, commit)
+        for n in range(ns):
+            var base = n * NPIX
+            for i in range(FRAME_PIX):
+                sheets[(n * n_frames + f) * FRAME_PIX + i] = UInt8(ids[base + TGT0 + i])
+            for i in range(TGT0):  # shift the history: the newest frame becomes context
+                ids[base + i] = ids[base + FRAME_PIX + i]
+
+
+def fill_inbetween(mut m: Model, mut wk: Work, mut eng: Optional[Engine], mut ids: List[Int],
                    mut sheets: List[UInt8], keys: List[Int], ns: Int, n_frames: Int, rows: Int, cls: Int,
                    use_cfg: Bool, n_steps: Int, temp: Float32, guidance: Float32, choice_noise: Float64) raises:
     """Keyframes A and B become the first and last frame of every sheet; the frames between are
@@ -235,7 +297,6 @@ def main() raises:
             raise Error("in-betweening fills gaps by halving: --frames must be 3, 5, 9, 17, ...")
 
     var ids = List[Int](length=group * NPIX, fill=cfg.V)
-    var commit = List[Int](length=group * T, fill=0)
     var result = List[UInt8]()
     var done = 0
     while done < n_samples:
@@ -247,27 +308,10 @@ def main() raises:
         comptime if INBETWEEN:
             fill_inbetween(m, wk, eng, ids, sheets, init_px, ns, n_frames, rows, cls, use_cfg, n_steps,
                            temp, guidance, choice_noise)
-            for i in range(len(sheets)):
-                result.append(sheets[i])
-            done += ns
-            print("sheets", done, "/", n_samples, "in", Float32(Float64(perf_counter_ns() - t0) / 1e9), "s", flush=True)
-            continue
-        var seeds = CF if init >= 0 else 0  # --init: the example's context frames open the sheet
-        for f in range(n_frames):
-            if f < seeds:  # a given frame goes where a drawn frame would land
-                for n in range(ns):
-                    for i in range(FRAME_PIX):
-                        ids[n * NPIX + TGT0 + i] = init_px[f * FRAME_PIX + i]
-            else:
-                generate_frames(m, wk, eng, ids, ns, rows, cls, use_cfg, n_steps, temp, guidance, choice_noise, commit)
-            for n in range(ns):
-                var base = n * NPIX
-                for i in range(FRAME_PIX):
-                    sheets[(n * n_frames + f) * FRAME_PIX + i] = UInt8(ids[base + TGT0 + i])
-                for i in range(TGT0):  # shift the history: the newest frame becomes context
-                    ids[base + i] = ids[base + FRAME_PIX + i]
-        for i in range(len(sheets)):
-            result.append(sheets[i])
+        else:
+            fill_sequential(m, wk, eng, ids, sheets, init_px, ns, n_frames, rows, cls, use_cfg, n_steps,
+                            temp, guidance, choice_noise)
+        result.extend(sheets^)
         done += ns
         print("sheets", done, "/", n_samples, "in", Float32(Float64(perf_counter_ns() - t0) / 1e9), "s", flush=True)
 

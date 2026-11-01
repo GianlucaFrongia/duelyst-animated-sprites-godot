@@ -1,4 +1,4 @@
-// Dev-server API over the project folder: reads checkpoints/, data*/, runs/ and calls psg, sample and render.py.
+// Dev-server API over the project folder: reads checkpoints/, data*/, runs/ and calls psg, sample-<arch> and render.py.
 import { execFile } from 'node:child_process'
 import fs from 'node:fs'
 import path from 'node:path'
@@ -32,6 +32,10 @@ function cmdFlags(cmd: string) {
   toks.forEach((t, i) => { if (t.startsWith('--') && toks[i + 1] && !toks[i + 1].startsWith('--')) out[t.slice(2)] = toks[i + 1] })
   return out
 }
+
+// Architectures (models/<arch>/arch/variant.mojo); each tool is built per architecture as ./<tool>-<arch>.
+const archs = () => fs.readdirSync(p('models')).filter((a) => fs.existsSync(p('models', a, 'arch', 'variant.mojo')))
+const ckptArch = (name: string) => kv(read(p('checkpoints', `${name}.cfg`))).A ?? ''
 
 function datasets() {
   return fs.readdirSync(ROOT).filter((d) => fs.existsSync(p(d, 'meta.txt'))).map((name) => {
@@ -95,7 +99,7 @@ function models() {
     const bin = p('checkpoints', name + '.bin')
     const r = all.find((r) => r.flags.out === `checkpoints/${name}`)
     return {
-      name, vocab: +c.V, classes: +c.C, dim: +c.D, layers: +c.L, heads: +c.H, mlp: +c.F,
+      name, arch: c.A ?? '', vocab: +c.V, classes: +c.C, dim: +c.D, layers: +c.L, heads: +c.H, mlp: +c.F,
       params: fs.existsSync(bin) ? fs.statSync(bin).size / 4 : 0, // checkpoint = float32 params
       updated: fs.existsSync(bin) ? fs.statSync(bin).mtime.toISOString() : '',
       run: r?.name ?? null, data: r?.flags.data ?? null, train: r?.flags ?? {},
@@ -118,11 +122,14 @@ async function api(url: string, req: IncomingMessage) {
   if (url === '/api/models') return models()
   if (url === '/api/datasets') return datasets()
   if (url === '/api/runs') return runs()
+  if (url === '/api/archs') return archs()
   if (req.method !== 'POST') throw new Error('not found')
   const b = await body(req)
   if (url === '/api/train') {
     if (!NAME.test(b.name) || !datasets().some((d) => d.name === b.data)) throw new Error('bad name or dataset')
-    const args = ['train', b.name, '--detach', '--', '--data', b.data]
+    const args = ['train', b.name, '--detach']
+    if (b.arch && !b.resume) { if (!archs().includes(b.arch)) throw new Error('bad architecture'); args.push('--arch', b.arch) }
+    args.push('--', '--data', b.data)
     for (const k of TRAIN_FLAGS) if (b.flags?.[k] !== undefined && b.flags[k] !== '') args.push(`--${k}`, num(b.flags[k]))
     if (b.resume) { if (!NAME.test(b.resume)) throw new Error('bad resume'); args.push('--resume', `checkpoints/${b.resume}`) }
     return { out: await run('./psg', args) }
@@ -155,7 +162,9 @@ async function api(url: string, req: IncomingMessage) {
       if (b[k] !== undefined && b[k] !== '') args.push(`--${k}`, num(b[k]))
     fs.mkdirSync(p(dir), { recursive: true })
     fs.writeFileSync(p(dir, 'request.json'), JSON.stringify(b, null, 2))
-    const log = await run('./sample', args)
+    const arch = ckptArch(b.model)
+    if (!archs().includes(arch)) throw new Error(`checkpoint ${b.model} has no known architecture`)
+    const log = await run(`./sample-${arch}`, args)
     await run('.venv/bin/python', ['tools/render.py', '--samples', `${dir}/samples.bin`, '--palette', `${b.data}/palette.txt`, '--out', dir])
     return { dir, log, ...outputs(dir) }
   }

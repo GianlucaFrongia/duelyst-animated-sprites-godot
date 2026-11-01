@@ -9,7 +9,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 
 type Model = {
-  name: string; vocab: number; classes: number; dim: number; layers: number; heads: number; mlp: number
+  name: string; arch: string; vocab: number; classes: number; dim: number; layers: number; heads: number; mlp: number
   params: number; updated: string; run: string | null; data: string | null; train: Record<string, string>
 }
 type Dataset = { name: string; pairs: number; colors: number; classes: string[]; size: number; k: number }
@@ -34,6 +34,8 @@ export default function App() {
   const [models, setModels] = useState<Model[]>([])
   const [datasets, setDatasets] = useState<Dataset[]>([])
   const [runs, setRuns] = useState<Run[]>([])
+  const [archs, setArchs] = useState<string[]>([])
+  useEffect(() => { call<string[]>('/api/archs').then(setArchs) }, [])
   const refresh = () => {
     call<Model[]>('/api/models').then(setModels)
     call<Dataset[]>('/api/datasets').then(setDatasets)
@@ -61,7 +63,7 @@ export default function App() {
         <TabsContent value="models"><ModelsTab models={models} /></TabsContent>
         <TabsContent value="datasets"><DatasetsTab datasets={datasets} /></TabsContent>
         <TabsContent value="pipeline">
-          <PipelineTab datasets={datasets} runs={runs} models={models} onChange={refresh} />
+          <PipelineTab archs={archs} datasets={datasets} runs={runs} models={models} onChange={refresh} />
         </TabsContent>
         <TabsContent value="inference"><InferenceTab models={models} datasets={datasets} /></TabsContent>
       </Tabs>
@@ -102,7 +104,7 @@ function ModelsTab({ models }: { models: Model[] }) {
           <Card key={x.name} className={`cursor-pointer ${x === m ? 'ring-2 ring-primary' : ''}`} onClick={() => setSel(x.name)}>
             <CardHeader>
               <CardTitle className="flex items-center justify-between">
-                {x.name} <Badge variant="secondary">{fmt(x.params)} params</Badge>
+                {x.name} <Badge variant="secondary">{x.arch} · {fmt(x.params)} params</Badge>
               </CardTitle>
               <CardDescription>
                 D {x.dim} · L {x.layers} · H {x.heads} · MLP {x.mlp} · {x.vocab} colors · {x.classes} classes
@@ -255,8 +257,9 @@ const DEFAULTS: Record<string, string> = {
   'cfg-drop': '0.1', 'context-drop': '0.15', flip: '0.0', seed: '0',
 }
 
-function PipelineTab({ datasets, runs, models, onChange }: { datasets: Dataset[]; runs: Run[]; models: Model[]; onChange: () => void }) {
+function PipelineTab({ archs, datasets, runs, models, onChange }: { archs: string[]; datasets: Dataset[]; runs: Run[]; models: Model[]; onChange: () => void }) {
   const [name, setName] = useState('')
+  const [arch, setArch] = useState('ctx')
   const [data, setData] = useState('')
   const [resume, setResume] = useState('none')
   const [flags, setFlags] = useState(DEFAULTS)
@@ -269,7 +272,7 @@ function PipelineTab({ datasets, runs, models, onChange }: { datasets: Dataset[]
   const start = async () => {
     setMsg('starting…')
     try {
-      const r = await call<{ out: string }>('/api/train', { name, data: ds, flags, resume: resume === 'none' ? '' : resume })
+      const r = await call<{ out: string }>('/api/train', { name, arch, data: ds, flags, resume: resume === 'none' ? '' : resume })
       setMsg(r.out); setPicked((p) => [...p, name]); onChange()
     } catch (e) { setMsg((e as Error).message) }
   }
@@ -285,11 +288,12 @@ function PipelineTab({ datasets, runs, models, onChange }: { datasets: Dataset[]
       <Card>
         <CardHeader>
           <CardTitle>Train a model</CardTitle>
-          <CardDescription>Runs <code>./psg train &lt;name&gt; -- …</code>; the checkpoint goes to checkpoints/&lt;name&gt;, the run to runs/&lt;name&gt;.</CardDescription>
+          <CardDescription>Runs <code>./psg train &lt;name&gt; --arch &lt;arch&gt; -- …</code> (resuming keeps the checkpoint's architecture); the checkpoint goes to checkpoints/&lt;name&gt;, the run to runs/&lt;name&gt;.</CardDescription>
         </CardHeader>
         <CardContent className="grid gap-4">
-          <div className="grid gap-3 sm:grid-cols-3">
+          <div className="grid gap-3 sm:grid-cols-4">
             <Field label="Run name" value={name} onChange={setName} />
+            <Pick label="Architecture" value={resume === 'none' ? arch : models.find((m) => m.name === resume)?.arch ?? arch} onChange={setArch} items={archs} />
             <Pick label="Dataset" value={ds} onChange={setData} items={datasets.map((d) => d.name)} />
             <Pick label="Resume from" value={resume} onChange={setResume} items={['none', ...models.map((m) => m.name)]} />
           </div>

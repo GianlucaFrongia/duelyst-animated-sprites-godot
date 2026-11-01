@@ -1,5 +1,5 @@
 # inbetween overnight: 7 hours at dim 256, 6 layers, 8 heads (5.3M parameters, 5.3 GB at batch
-# 42, ~38 pairs/s on the M2 Pro, about 15 passes over the data), then samples on the held-out
+# 42, ~38 pairs/s measured, about 15 passes over the data), then samples on the held-out
 # idle frame used by pipelines/compare_archs.pipe.
 #     ./psg run pipelines/inbetween_night.pipe
 

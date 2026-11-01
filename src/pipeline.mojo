@@ -7,8 +7,9 @@
 #       cmd .venv/bin/python tools/prepare_animations.py --atlases raw/units --out ${DATA}
 #       skip_if ${DATA}/meta.txt          # skip the stage when this path exists
 #     stage train
-#       cmd ./train_gpu --data ${DATA} --out checkpoints/small --steps 4000
-#       gpu yes                           # wait until no other run is using the GPU
+#       cmd ./train_gpu-ctx --data ${DATA} --out checkpoints/small --steps 4000
+#       gpu yes                           # wait until no other run is using the GPU (the
+#                                         # default for stages that run a GPU tool, see uses_gpu)
 #
 # Each run lives in runs/<name>/. Everything psg shows is derived from the files there,
 # so `status` works without talking to the worker process:
@@ -113,9 +114,38 @@ def parse_pipeline(text: String, mut name: String) raises -> List[Stage]:
         ref s = stages[i]
         if s.cmd.byte_length() == 0:
             raise Error("stage '" + s.name + "' has no cmd")
-        if not s.gpu_set:  # GPU programs in this repo, unless the stage says otherwise
-            s.gpu = "train_gpu" in s.cmd or "./sample" in s.cmd or "gpu_check" in s.cmd
+        if not s.gpu_set:
+            s.gpu = uses_gpu(s.cmd)
     return stages^
+
+
+# ------------------------------------------------------------------ binaries
+
+comptime GPU_TOOLS = ["train_gpu", "sample", "gpu_check", "grpo"]  # built per architecture
+
+
+def tool_bin(tool: String, arch: String) -> String:
+    """The binary tools/build.sh builds for a tool and an architecture in models/."""
+    return "./" + tool + "-" + arch
+
+
+def uses_gpu(cmd: String) -> Bool:
+    """Whether a stage command runs one of the GPU tools (a word ./<tool>-<arch>)."""
+    for word in cmd.split():
+        if not word.startswith("./"):
+            continue
+        comptime for tool in GPU_TOOLS:
+            if word.startswith("./" + tool + "-"):
+                return True
+    return False
+
+
+def ckpt_arch(prefix: String) raises -> String:
+    """The architecture a checkpoint was trained with (the 'A <name>' line of its .cfg)."""
+    for line in read_text(prefix + ".cfg").splitlines():
+        if line.startswith("A "):
+            return String(line[byte=2:].strip())
+    raise Error(prefix + ".cfg has no architecture line")
 
 
 def substituted(text: String) raises -> String:
@@ -185,10 +215,20 @@ def stage_state(rundir: String, i: Int) raises -> String:
     return "pending"
 
 
+def is_failure(state: String) -> Bool:
+    """A stage or run that ended without finishing."""
+    return state == "failed" or state == "stopped" or state == "died"
+
+
+def has_ended(state: String) -> Bool:
+    """A stage that is over, successfully or not (its log is complete)."""
+    return state == "done" or state == "ended" or is_failure(state)
+
+
 def run_state(rundir: String, n: Int) raises -> String:
     for i in range(n):
         var s = stage_state(rundir, i)
-        if s == "failed" or s == "stopped" or s == "died":
+        if is_failure(s):
             return s
         if s == "running" or s == "waiting":
             return s

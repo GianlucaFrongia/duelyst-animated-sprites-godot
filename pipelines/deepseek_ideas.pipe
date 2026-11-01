@@ -24,7 +24,6 @@ stage train_inbetween_sparse
 
 stage grpo_inbetween
   cmd ./grpo-inbetween --ckpt checkpoints/cmp_inbetween --data ${DIB} --out checkpoints/cmp_inbetween_grpo --iters 150 --lr 3e-5 --eval-every 25 ${IBS}
-  gpu yes
 
 stage sample_inbetween_wsd
   cmd ./sample-inbetween --ckpt checkpoints/cmp_inbetween_wsd --data ${DIB}/val --class idle --init 35 --n 4 --frames 9 ${IBS} --out ${OUT}/inbetween_wsd/samples.bin

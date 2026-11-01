@@ -1,7 +1,7 @@
 # All four architectures, ~30 min of training each on the same frames (Duelyst + Hull Rupture +
 # Songs of Conquest), then held-out validation loss, samples and one comparison.
 # Same settings for all (dim 128, 4 layers, 4 heads, Muon lr 1e-2, batch 42); steps are sized
-# to ~30 min from measured speed on the M2 Pro (ctx 143, ctx2 and inbetween 133 pairs/s, 5%
+# to ~30 min from a measured speed (ctx 143, ctx2 and inbetween 133 pairs/s; re-measure on new hardware; 5%
 # warmup), and stacked, whose 2048-token canvas is much slower, uses train_gpu's 30-minute
 # --minutes budget instead. Every dataset holds out the same 34 units in val/ (split by unit name), so the
 # validation losses are on units no model saw. inbetween predicts the frame between two
@@ -35,7 +35,7 @@ stage prepare_inbetween
   skip_if ${DIB}/val/meta.txt
 
 stage train_ctx
-  cmd ./train_gpu --data ${D2} --out checkpoints/cmp_ctx --steps 6100 --batch 42 --warmup 300 ${COMMON}
+  cmd ./train_gpu-ctx --data ${D2} --out checkpoints/cmp_ctx --steps 6100 --batch 42 --warmup 300 ${COMMON}
 
 stage train_ctx2
   cmd ./train_gpu-ctx2 --data ${D3} --out checkpoints/cmp_ctx2 --steps 5700 --batch 42 --warmup 285 ${COMMON}
@@ -47,7 +47,7 @@ stage train_stacked
   cmd ./train_gpu-stacked --data ${D2} --out checkpoints/cmp_stacked --minutes 30 --batch 42 --warmup 150 ${COMMON}
 
 stage sample_ctx
-  cmd ./sample --ckpt checkpoints/cmp_ctx --data ${D2}/val --class idle --init 17 --n 4 --frames 10 --out ${OUT}/ctx/samples.bin
+  cmd ./sample-ctx --ckpt checkpoints/cmp_ctx --data ${D2}/val --class idle --init 17 --n 4 --frames 10 --out ${OUT}/ctx/samples.bin
   cmd .venv/bin/python tools/render.py --samples ${OUT}/ctx/samples.bin --palette ${D2}/palette.txt --out ${OUT}/ctx
 
 stage sample_ctx2

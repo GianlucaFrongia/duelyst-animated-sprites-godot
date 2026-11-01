@@ -11,7 +11,7 @@ logs/
 data_*/
 runs/
 *.tmp
-# compiled binaries (tools/build.sh)
+# compiled binaries (tools/build.sh): ./<tool>-<arch>, psg
 /train_gpu-*
 /sample-*
 /gpu_check
@@ -20,3 +20,4 @@ runs/
 /psg
 __pycache__/
 .DS_Store
+/gradcheck-*

@@ -9,6 +9,8 @@
 #   att  [R, D]   head h's output is columns h*HD
 #   lse  [B*H*T]  log-sum-exp of each query row's scaled scores, indexed (b*H + h)*T + t
 #   dvec [B*H*T]  sum_d dO*O per query row (the softmax-backward correction)
+# T here (nt in the code) is this batch's tokens per canvas, a multiple of BQ: the model's T,
+# or fewer when the engine runs only some tokens (CROP, see token_order in src/model.mojo).
 #
 # Each GPU kernel has a plain per-row b_* counterpart computing the same thing, used when the
 # engine runs without a GPU.
@@ -18,7 +20,7 @@ from std.memory import stack_allocation
 from max.gpu import thread_idx, block_idx, barrier
 from max.gpu.primitives import warp
 from max.gpu.memory import AddressSpace
-from arch.model import T, in_band
+from src.model import in_band, run_len
 
 comptime FP = Pointer[Float32, MutAnyOrigin]
 comptime BQ = 64  # query rows per block (4 threads per row)
@@ -29,18 +31,18 @@ comptime NEG_INF: Float32 = -3.0e38
 # ============================================================================ CPU bodies
 
 
-def b_attn_fwd(att: FP, lse: FP, qkv: FP, D: Int, H: Int, hd: Int, scale: Float32, i: Int):
-    """Query row i = (b*H + h)*T + t: two passes over the keys (max, then exp-sum and P V)."""
-    var bh = i // T
-    var t = i - bh * T
+def b_attn_fwd(att: FP, lse: FP, qkv: FP, D: Int, H: Int, hd: Int, scale: Float32, nt: Int, i: Int):
+    """Query row i = (b*H + h)*nt + t: two passes over the keys (max, then exp-sum and P V)."""
+    var bh = i // nt
+    var t = i - bh * nt
     var b = bh // H
     var h = bh - b * H
-    var q = qkv.unsafe_offset((b * T + t) * 3 * D + h * hd)
-    var kb = qkv.unsafe_offset(b * T * 3 * D + D + h * hd)
-    var vb = qkv.unsafe_offset(b * T * 3 * D + 2 * D + h * hd)
-    var o = att.unsafe_offset((b * T + t) * D + h * hd)
+    var q = qkv.unsafe_offset((b * nt + t) * 3 * D + h * hd)
+    var kb = qkv.unsafe_offset(b * nt * 3 * D + D + h * hd)
+    var vb = qkv.unsafe_offset(b * nt * 3 * D + 2 * D + h * hd)
+    var o = att.unsafe_offset((b * nt + t) * D + h * hd)
     var mx = NEG_INF
-    for j in range(T):
+    for j in range(nt):
         if not in_band(t, j):
             continue
         var s: Float32 = 0.0
@@ -50,7 +52,7 @@ def b_attn_fwd(att: FP, lse: FP, qkv: FP, D: Int, H: Int, hd: Int, scale: Float3
     for d in range(hd):
         o[unsafe_offset=d] = 0.0
     var l: Float32 = 0.0
-    for j in range(T):
+    for j in range(nt):
         if not in_band(t, j):
             continue
         var s: Float32 = 0.0
@@ -65,12 +67,12 @@ def b_attn_fwd(att: FP, lse: FP, qkv: FP, D: Int, H: Int, hd: Int, scale: Float3
     lse[unsafe_offset=i] = mx + log(l)
 
 
-def b_attn_dvec(dvec: FP, att: FP, datt: FP, D: Int, H: Int, hd: Int, i: Int):
-    var bh = i // T
-    var t = i - bh * T
+def b_attn_dvec(dvec: FP, att: FP, datt: FP, D: Int, H: Int, hd: Int, nt: Int, i: Int):
+    var bh = i // nt
+    var t = i - bh * nt
     var b = bh // H
     var h = bh - b * H
-    var off = (b * T + t) * D + h * hd
+    var off = (b * nt + t) * D + h * hd
     var s: Float32 = 0.0
     for d in range(hd):
         s += att[unsafe_offset=off + d] * datt[unsafe_offset=off + d]
@@ -78,55 +80,55 @@ def b_attn_dvec(dvec: FP, att: FP, datt: FP, D: Int, H: Int, hd: Int, i: Int):
 
 
 def b_attn_bwd_kv(dqkv: FP, qkv: FP, datt: FP, lse: FP, dvec: FP, D: Int, H: Int, hd: Int,
-                  scale: Float32, i: Int):
-    """Key row i = (b*H + h)*T + j: dK_j = scale * sum_t dS_tj Q_t, dV_j = sum_t P_tj dO_t."""
-    var bh = i // T
-    var j = i - bh * T
+                  scale: Float32, nt: Int, i: Int):
+    """Key row i = (b*H + h)*nt + j: dK_j = scale * sum_t dS_tj Q_t, dV_j = sum_t P_tj dO_t."""
+    var bh = i // nt
+    var j = i - bh * nt
     var b = bh // H
     var h = bh - b * H
-    var k = qkv.unsafe_offset((b * T + j) * 3 * D + D + h * hd)
-    var v = qkv.unsafe_offset((b * T + j) * 3 * D + 2 * D + h * hd)
-    var dk = dqkv.unsafe_offset((b * T + j) * 3 * D + D + h * hd)
-    var dv = dqkv.unsafe_offset((b * T + j) * 3 * D + 2 * D + h * hd)
+    var k = qkv.unsafe_offset((b * nt + j) * 3 * D + D + h * hd)
+    var v = qkv.unsafe_offset((b * nt + j) * 3 * D + 2 * D + h * hd)
+    var dk = dqkv.unsafe_offset((b * nt + j) * 3 * D + D + h * hd)
+    var dv = dqkv.unsafe_offset((b * nt + j) * 3 * D + 2 * D + h * hd)
     for d in range(hd):
         dk[unsafe_offset=d] = 0.0
         dv[unsafe_offset=d] = 0.0
-    for t in range(T):
+    for t in range(nt):
         if not in_band(t, j):
             continue
-        var q = qkv.unsafe_offset((b * T + t) * 3 * D + h * hd)
-        var do = datt.unsafe_offset((b * T + t) * D + h * hd)
+        var q = qkv.unsafe_offset((b * nt + t) * 3 * D + h * hd)
+        var do = datt.unsafe_offset((b * nt + t) * D + h * hd)
         var s: Float32 = 0.0
         var dp: Float32 = 0.0
         for d in range(hd):
             s += q[unsafe_offset=d] * k[unsafe_offset=d]
             dp += do[unsafe_offset=d] * v[unsafe_offset=d]
-        var p = exp(s * scale - lse[unsafe_offset=bh * T + t])
-        var ds = p * (dp - dvec[unsafe_offset=bh * T + t]) * scale
+        var p = exp(s * scale - lse[unsafe_offset=bh * nt + t])
+        var ds = p * (dp - dvec[unsafe_offset=bh * nt + t]) * scale
         for d in range(hd):
             dv[unsafe_offset=d] += p * do[unsafe_offset=d]
             dk[unsafe_offset=d] += ds * q[unsafe_offset=d]
 
 
 def b_attn_bwd_q(dqkv: FP, qkv: FP, datt: FP, lse: FP, dvec: FP, D: Int, H: Int, hd: Int,
-                 scale: Float32, i: Int):
-    """Query row i = (b*H + h)*T + t: dQ_t = scale * sum_j dS_tj K_j."""
-    var bh = i // T
-    var t = i - bh * T
+                 scale: Float32, nt: Int, i: Int):
+    """Query row i = (b*H + h)*nt + t: dQ_t = scale * sum_j dS_tj K_j."""
+    var bh = i // nt
+    var t = i - bh * nt
     var b = bh // H
     var h = bh - b * H
-    var q = qkv.unsafe_offset((b * T + t) * 3 * D + h * hd)
-    var do = datt.unsafe_offset((b * T + t) * D + h * hd)
-    var dq = dqkv.unsafe_offset((b * T + t) * 3 * D + h * hd)
+    var q = qkv.unsafe_offset((b * nt + t) * 3 * D + h * hd)
+    var do = datt.unsafe_offset((b * nt + t) * D + h * hd)
+    var dq = dqkv.unsafe_offset((b * nt + t) * 3 * D + h * hd)
     var l = lse[unsafe_offset=i]
     var dv = dvec[unsafe_offset=i]
     for d in range(hd):
         dq[unsafe_offset=d] = 0.0
-    for j in range(T):
+    for j in range(nt):
         if not in_band(t, j):
             continue
-        var k = qkv.unsafe_offset((b * T + j) * 3 * D + D + h * hd)
-        var v = qkv.unsafe_offset((b * T + j) * 3 * D + 2 * D + h * hd)
+        var k = qkv.unsafe_offset((b * nt + j) * 3 * D + D + h * hd)
+        var v = qkv.unsafe_offset((b * nt + j) * 3 * D + 2 * D + h * hd)
         var s: Float32 = 0.0
         var dp: Float32 = 0.0
         for d in range(hd):
@@ -206,10 +208,11 @@ def store_slice[HD: Int](dst: FP, v: SIMD[DType.float32, HD], q4: Int, mul: Floa
                 dst[unsafe_offset=e] = v[q * SL + e] * mul
 
 
-def k_attn_fwd[HD: Int](att: FP, lse: FP, qkv: FP, D: Int32, H: Int32, scale: Float32):
+def k_attn_fwd[HD: Int](att: FP, lse: FP, qkv: FP, D: Int32, H: Int32, scale: Float32, TN: Int32):
     """One block = BQ query rows of one (sprite, head). grid = B * H * (T / BQ).
     Each lane accumulates P V over its own score columns for all HD dims; the row's 4 lanes
     share the running max by shuffles and sum their outputs once at the end."""
+    var nt = run_len(TN)
     comptime LD = ld[HD]()
     comptime SL = HD // 4  # head dims each lane writes
     comptime NC = BK // 4  # score columns per thread per tile
@@ -218,7 +221,7 @@ def k_attn_fwd[HD: Int](att: FP, lse: FP, qkv: FP, D: Int32, H: Int32, scale: Fl
     var tid = Int(thread_idx.x)
     var nd = Int(D)
     var nh = Int(H)
-    var tiles = T // BQ
+    var tiles = nt // BQ
     var bh = Int(block_idx.x) // tiles
     var t0 = (Int(block_idx.x) - bh * tiles) * BQ
     var b = bh // nh
@@ -226,7 +229,7 @@ def k_attn_fwd[HD: Int](att: FP, lse: FP, qkv: FP, D: Int32, H: Int32, scale: Fl
     var r = tid // 4
     var q4 = tid % 4
     var t = t0 + r
-    var base = qkv.unsafe_offset(b * T * 3 * nd + h * HD)
+    var base = qkv.unsafe_offset(b * nt * 3 * nd + h * HD)
 
     var qreg = SIMD[DType.float32, HD](0.0)
     comptime for d in range(HD):
@@ -235,7 +238,7 @@ def k_attn_fwd[HD: Int](att: FP, lse: FP, qkv: FP, D: Int32, H: Int32, scale: Fl
     var m = NEG_INF
     var l: Float32 = 0.0  # this lane's share of the row's exp-sum
 
-    for k0 in range(0, T, BK):
+    for k0 in range(0, nt, BK):
         if not in_band(t0, k0):  # the same for the whole block, so barriers stay uniform
             continue
         load_tile[HD](Ks, base.unsafe_offset(nd), k0, 3 * nd, tid)
@@ -260,14 +263,15 @@ def k_attn_fwd[HD: Int](att: FP, lse: FP, qkv: FP, D: Int32, H: Int32, scale: Fl
 
     o = quad_sum[HD](o)
     var lt = quad_sum[1](SIMD[DType.float32, 1](l))[0]
-    store_slice[HD](att.unsafe_offset((b * T + t) * nd + h * HD + q4 * SL), o, q4, 1.0 / lt)
+    store_slice[HD](att.unsafe_offset((b * nt + t) * nd + h * HD + q4 * SL), o, q4, 1.0 / lt)
     if q4 == 0:
-        lse[unsafe_offset=bh * T + t] = m + log(lt)
+        lse[unsafe_offset=bh * nt + t] = m + log(lt)
 
 
-def k_attn_dvec(dvec: FP, att: FP, datt: FP, D: Int32, H: Int32, hd: Int32, n: Int32):
+def k_attn_dvec(dvec: FP, att: FP, datt: FP, D: Int32, H: Int32, hd: Int32, n: Int32, TN: Int32):
     """One thread per element of att (grid covers n * hd = R * D, coalesced); each head's hd
     adjacent lanes sum their products by shuffles (hd divides the warp, 16 or 32)."""
+    var nt = run_len(TN)
     var i = Int(block_idx.x) * 256 + Int(thread_idx.x)
     var nh = Int(hd)
     var v: Float32 = 0.0
@@ -280,14 +284,15 @@ def k_attn_dvec(dvec: FP, att: FP, datt: FP, D: Int32, H: Int32, hd: Int32, n: I
     if i < Int(n) * nh and i % nh == 0:
         var r = i // Int(D)
         var h = (i - r * Int(D)) // nh
-        var b = r // T
-        dvec[unsafe_offset=(b * Int(H) + h) * T + r - b * T] = v
+        var b = r // nt
+        dvec[unsafe_offset=(b * Int(H) + h) * nt + r - b * nt] = v
 
 
 def k_attn_bwd_kv[HD: Int](dqkv: FP, qkv: FP, datt: FP, lse: FP, dvec: FP, D: Int32, H: Int32,
-                           scale: Float32):
+                           scale: Float32, TN: Int32):
     """One block = BQ key rows of one (sprite, head), streaming query tiles of BK rows.
     grid = B * H * (T / BQ)."""
+    var nt = run_len(TN)
     comptime LD = ld[HD]()
     comptime SL = HD // 4
     comptime NC = BK // 4
@@ -300,7 +305,7 @@ def k_attn_bwd_kv[HD: Int](dqkv: FP, qkv: FP, datt: FP, lse: FP, dvec: FP, D: In
     var tid = Int(thread_idx.x)
     var nd = Int(D)
     var nh = Int(H)
-    var tiles = T // BQ
+    var tiles = nt // BQ
     var bh = Int(block_idx.x) // tiles
     var j0 = (Int(block_idx.x) - bh * tiles) * BQ
     var b = bh // nh
@@ -308,8 +313,8 @@ def k_attn_bwd_kv[HD: Int](dqkv: FP, qkv: FP, datt: FP, lse: FP, dvec: FP, D: In
     var r = tid // 4
     var q4 = tid % 4
     var j = j0 + r
-    var base = qkv.unsafe_offset(b * T * 3 * nd + h * HD)
-    var dbase = datt.unsafe_offset(b * T * nd + h * HD)
+    var base = qkv.unsafe_offset(b * nt * 3 * nd + h * HD)
+    var dbase = datt.unsafe_offset(b * nt * nd + h * HD)
 
     var kreg = SIMD[DType.float32, HD](0.0)
     var vreg = SIMD[DType.float32, HD](0.0)
@@ -319,14 +324,14 @@ def k_attn_bwd_kv[HD: Int](dqkv: FP, qkv: FP, datt: FP, lse: FP, dvec: FP, D: In
     var dk = SIMD[DType.float32, SL](0.0)
     var dv = SIMD[DType.float32, SL](0.0)
 
-    for t0 in range(0, T, BK):
+    for t0 in range(0, nt, BK):
         if not in_band(t0, j0):
             continue
         load_tile[HD](Qs, base, t0, 3 * nd, tid)
         load_tile[HD](dOs, dbase, t0, nd, tid)
         if tid < BK:
-            Ls[unsafe_offset=tid] = lse[unsafe_offset=bh * T + t0 + tid]
-            Dv[unsafe_offset=tid] = dvec[unsafe_offset=bh * T + t0 + tid]
+            Ls[unsafe_offset=tid] = lse[unsafe_offset=bh * nt + t0 + tid]
+            Dv[unsafe_offset=tid] = dvec[unsafe_offset=bh * nt + t0 + tid]
         barrier()
         comptime for c in range(NC):
             var i = q4 + 4 * c
@@ -345,15 +350,16 @@ def k_attn_bwd_kv[HD: Int](dqkv: FP, qkv: FP, datt: FP, lse: FP, dvec: FP, D: In
                 dk += ds4[ii] * Qs.unsafe_load[width=SL, alignment=16](o)
         barrier()
 
-    var row = dqkv.unsafe_offset((b * T + j) * 3 * nd + h * HD + q4 * SL)
+    var row = dqkv.unsafe_offset((b * nt + j) * 3 * nd + h * HD + q4 * SL)
     comptime for e in range(SL):
         row[unsafe_offset=nd + e] = dk[e] * scale
         row[unsafe_offset=2 * nd + e] = dv[e]
 
 
 def k_attn_bwd_q[HD: Int](dqkv: FP, qkv: FP, datt: FP, lse: FP, dvec: FP, D: Int32, H: Int32,
-                          scale: Float32):
+                          scale: Float32, TN: Int32):
     """One block = BQ query rows of one (sprite, head), streaming key tiles. grid as k_attn_fwd."""
+    var nt = run_len(TN)
     comptime LD = ld[HD]()
     comptime SL = HD // 4
     comptime NC = BK // 4
@@ -363,7 +369,7 @@ def k_attn_bwd_q[HD: Int](dqkv: FP, qkv: FP, datt: FP, lse: FP, dvec: FP, D: Int
     var tid = Int(thread_idx.x)
     var nd = Int(D)
     var nh = Int(H)
-    var tiles = T // BQ
+    var tiles = nt // BQ
     var bh = Int(block_idx.x) // tiles
     var t0 = (Int(block_idx.x) - bh * tiles) * BQ
     var b = bh // nh
@@ -371,18 +377,18 @@ def k_attn_bwd_q[HD: Int](dqkv: FP, qkv: FP, datt: FP, lse: FP, dvec: FP, D: Int
     var r = tid // 4
     var q4 = tid % 4
     var t = t0 + r
-    var base = qkv.unsafe_offset(b * T * 3 * nd + h * HD)
+    var base = qkv.unsafe_offset(b * nt * 3 * nd + h * HD)
 
     var qreg = SIMD[DType.float32, HD](0.0)
     var doreg = SIMD[DType.float32, HD](0.0)
     comptime for d in range(HD):
         qreg[d] = base[unsafe_offset=t * 3 * nd + d] * scale
-        doreg[d] = datt[unsafe_offset=(b * T + t) * nd + h * HD + d]
-    var l = lse[unsafe_offset=bh * T + t]
-    var dvi = dvec[unsafe_offset=bh * T + t]
+        doreg[d] = datt[unsafe_offset=(b * nt + t) * nd + h * HD + d]
+    var l = lse[unsafe_offset=bh * nt + t]
+    var dvi = dvec[unsafe_offset=bh * nt + t]
     var dq = SIMD[DType.float32, SL](0.0)
 
-    for k0 in range(0, T, BK):
+    for k0 in range(0, nt, BK):
         if not in_band(t0, k0):  # the same for the whole block, so barriers stay uniform
             continue
         load_tile[HD](Ks, base.unsafe_offset(nd), k0, 3 * nd, tid)
@@ -400,6 +406,6 @@ def k_attn_bwd_q[HD: Int](dqkv: FP, qkv: FP, datt: FP, lse: FP, dvec: FP, D: Int
                 dq += ds4[jj] * Ks.unsafe_load[width=SL, alignment=16]((j0 + jj) * LD + q4 * SL)
         barrier()
 
-    var row = dqkv.unsafe_offset((b * T + t) * 3 * nd + h * HD + q4 * SL)
+    var row = dqkv.unsafe_offset((b * nt + t) * 3 * nd + h * HD + q4 * SL)
     comptime for e in range(SL):
         row[unsafe_offset=e] = dq[e] * scale

@@ -13,13 +13,13 @@ stage dataset
   skip_if ${DATA}/meta.txt
 
 stage gpu_check
-  cmd ./gpu_check
+  cmd ./gpu_check-ctx
 
 stage train
-  cmd ./train_gpu --data ${DATA} --out ${MODEL} --steps 2000
+  cmd ./train_gpu-ctx --data ${DATA} --out ${MODEL} --steps 2000
 
 stage sample
-  cmd ./sample --ckpt ${MODEL} --data ${DATA} --class slime --n 4 --frames 8 --out out/toy/samples.bin
+  cmd ./sample-ctx --ckpt ${MODEL} --data ${DATA} --class slime --n 4 --frames 8 --out out/toy/samples.bin
 
 stage render
   cmd .venv/bin/python tools/render.py --samples out/toy/samples.bin --palette ${DATA}/palette.txt --out out/toy

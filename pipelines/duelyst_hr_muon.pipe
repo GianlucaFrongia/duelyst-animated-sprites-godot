@@ -1,6 +1,6 @@
 # ctx on Duelyst + Hull Rupture + Songs of Conquest (the animations that fit 64x64) with Muon (weight matrices) + AdamW (the rest), batch 42.
 # 38000 steps x 42 = 1.6M examples, 10x the budget of pipelines/duelyst_hr.pipe (20000 x 8).
-# Batch 42 keeps the GPU buffers under 2 GB (~1.9 GB), ~143 pairs/s on the M2 Pro, about 3 hours in total.
+# Batch 42 keeps the GPU buffers under 2 GB (~1.9 GB); at the measured ~143 pairs/s that is about 3 hours in total.
 # Muon lr 1e-2 was the best of two tried at batch 32 (close to 42); it is not tuned for batch 42.
 #     ./psg run pipelines/duelyst_hr_muon.pipe
 
@@ -21,8 +21,8 @@ stage prepare
   skip_if ${DATA}/meta.txt
 
 stage train
-  cmd ./train_gpu --data ${DATA} --out checkpoints/duelyst_hr_muon --steps 38000 --batch 42 --dim 128 --layers 4 --muon --lr 1e-2 --warmup 2000 --log-every 10 --save-every 1000
+  cmd ./train_gpu-ctx --data ${DATA} --out checkpoints/duelyst_hr_muon --steps 38000 --batch 42 --dim 128 --layers 4 --muon --lr 1e-2 --warmup 2000 --log-every 10 --save-every 1000
 
 stage sample
-  cmd ./sample --ckpt checkpoints/duelyst_hr_muon --data ${DATA} --class idle --n 4 --frames 10 --out out/duelyst_hr_muon/samples.bin
+  cmd ./sample-ctx --ckpt checkpoints/duelyst_hr_muon --data ${DATA} --class idle --n 4 --frames 10 --out out/duelyst_hr_muon/samples.bin
   cmd .venv/bin/python tools/render.py --samples out/duelyst_hr_muon/samples.bin --palette ${DATA}/palette.txt --out out/duelyst_hr_muon

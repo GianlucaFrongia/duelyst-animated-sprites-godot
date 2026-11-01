@@ -14,8 +14,8 @@ stage prepare
   skip_if ${DATA}/meta.txt
 
 stage train_large
-  cmd ./train_gpu --data ${DATA} --out checkpoints/duelyst_hr_large --steps 20000 --dim 128 --layers 4 --lr 6e-4 --warmup 500
+  cmd ./train_gpu-ctx --data ${DATA} --out checkpoints/duelyst_hr_large --steps 20000 --dim 128 --layers 4 --lr 6e-4 --warmup 500
 
 stage sample_large
-  cmd ./sample --ckpt checkpoints/duelyst_hr_large --data ${DATA} --class idle --n 4 --frames 10 --out out/duelyst_hr_large/samples.bin
+  cmd ./sample-ctx --ckpt checkpoints/duelyst_hr_large --data ${DATA} --class idle --n 4 --frames 10 --out out/duelyst_hr_large/samples.bin
   cmd .venv/bin/python tools/render.py --samples out/duelyst_hr_large/samples.bin --palette ${DATA}/palette.txt --out out/duelyst_hr_large

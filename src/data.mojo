@@ -2,7 +2,7 @@
 
 from std.math import cos
 from std.random import random_float64, random_ui64
-from arch.model import T, NT, PP, NPIX, IMG, FRAME_PIX, INBETWEEN, tgt_pix, is_target
+from src.model import T, NT, PP, NPIX, IMG, FRAME_PIX, INBETWEEN, tgt_pix, is_target, full_tokens
 
 comptime CF = NPIX // FRAME_PIX - 1  # context frames per example; the target is the last frame
 comptime TGT0 = CF * FRAME_PIX  # first pixel of the target frame
@@ -97,18 +97,23 @@ def read_context(dir: String, i: Int) raises -> List[Int]:
 def random_mask(mut mask: List[Bool], mut order: List[Int]) -> Int:
     """MaskGIT cosine schedule: mask a random fraction cos(pi/2 * u) of the target tokens
     (is_target); other tokens are never masked or scored. Returns count."""
+    return random_mask_rows(mask, order, full_tokens())
+
+
+def random_mask_rows(mut mask: List[Bool], mut order: List[Int], toks: List[Int]) -> Int:
+    """random_mask over the rows of a forward on only the tokens toks: mask[r] for token toks[r]."""
     var u = random_float64()
     var ratio = cos(1.5707963267948966 * u)
-    var n = Int(ratio * Float64(NT) + 0.999)
-    n = max(1, min(NT, n))
     var nt = 0
-    for t in range(T):
-        mask[t] = False
-        if is_target(t):
-            order[nt] = t
+    for r in range(len(toks)):
+        mask[r] = False
+        if is_target(toks[r]):
+            order[nt] = r
             nt += 1
+    var n = Int(ratio * Float64(nt) + 0.999)
+    n = max(1, min(nt, n))
     for i in range(n):  # partial Fisher-Yates shuffle
-        var j = i + Int(random_ui64(0, UInt64(NT - 1 - i)))
+        var j = i + Int(random_ui64(0, UInt64(nt - 1 - i)))
         var tmp = order[i]
         order[i] = order[j]
         order[j] = tmp
@@ -130,14 +135,20 @@ def apply_mask(mut ids: List[Int], target: List[Int], mask: List[Bool], mask_id:
     """Masks the selected tokens, and hides the oldest blank_frames context frames: all CF of
     them teaches drawing a first frame from nothing, fewer teaches the frames that follow
     while the history is still short."""
+    apply_mask_rows(ids, target, mask, mask_id, blank_frames, full_tokens())
+
+
+def apply_mask_rows(mut ids: List[Int], target: List[Int], mask: List[Bool], mask_id: Int, blank_frames: Int,
+                    toks: List[Int]):
+    """apply_mask with mask per row of a forward on only the tokens toks."""
     for i in range(NPIX):
         ids[i] = target[i]
     for i in range(blank_frames * FRAME_PIX):
         ids[i] = mask_id
-    for t in range(T):
-        if mask[t]:
+    for r in range(len(toks)):
+        if mask[r]:
             for k in range(PP):
-                ids[tgt_pix(t, k)] = mask_id
+                ids[tgt_pix(toks[r], k)] = mask_id
 
 
 # ------------------------------------------------------------------ CLI args

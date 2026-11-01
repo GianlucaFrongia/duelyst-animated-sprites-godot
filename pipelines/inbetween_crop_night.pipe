@@ -1,0 +1,21 @@
+# inbetween_crop overnight: pipelines/inbetween_night.pipe with the cropped architecture, same
+# data, model, time budget and flags, so the two val logs compare directly (the crop's val loss
+# counts the pixels it doesn't run as free; it prints how many opaque ones that drops). On an
+# M2 Pro the crop trained 2.5x the pairs/s of inbetween at dim 128, so expect about twice the
+# steps in the same 7 hours.
+#     ./psg run pipelines/inbetween_crop_night.pipe
+
+name inbetween_crop_night
+set DIB data_duelyst_hr_soc_ib_val
+set IBS --temperature 1.0 --choice-noise 10
+
+stage build
+  cmd ARCH=inbetween_crop sh tools/build.sh train_gpu sample gpu_check
+  cmd ./gpu_check-inbetween_crop
+
+stage train
+  cmd ./train_gpu-inbetween_crop --data ${DIB} --out checkpoints/inbetween_crop_night --minutes 420 --batch 42 --warmup 2000 --dim 256 --layers 6 --heads 8 --muon --lr 1e-2 --context-drop 0 --history-drop 0 --log-every 25 --save-every 2000 --val-every 2000
+
+stage sample
+  cmd ./sample-inbetween_crop --ckpt checkpoints/inbetween_crop_night --data ${DIB}/val --class idle --init 35 --n 4 --frames 9 ${IBS} --out out/inbetween_crop_night/samples.bin
+  cmd .venv/bin/python tools/render.py --samples out/inbetween_crop_night/samples.bin --palette ${DIB}/palette.txt --out out/inbetween_crop_night

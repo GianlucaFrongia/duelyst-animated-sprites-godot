@@ -19,6 +19,7 @@ from std.os.path import exists, isdir
 from std.time import sleep
 from src.pipeline import (
     Stage, Progress, parse_pipeline, substituted, parse_progress, stage_state, run_state,
+    is_failure, has_ended, tool_bin, ckpt_arch,
     stage_file, read_text, read_or, write_text, q, alive, now_epoch,
 )
 
@@ -200,20 +201,14 @@ def render_run(name: String, now: Int, detail: Bool) raises -> String:
     var state = run_state(d, len(stages))
     var created = meta_value(d, "created")
     var out = color(name, "1") + "  " + state_badge(state) + color("  started " + created, "2") + "\n"
-    var finished = state == "done" or state == "failed" or state == "stopped" or state == "died"
+    var finished = state == "done" or is_failure(state)
     for i in range(len(stages)):
         var s = stage_state(d, i)
         if s == "pending" and finished:
             s = "not run"
         var line = "  " + pad(stages[i].name, 12) + " "
-        var start = read_or(stage_file(d, i, "start"), "")
-        var end = read_or(stage_file(d, i, "end"), "")
-        var took = String("")
-        if start.byte_length() > 0:
-            var t1 = Int(end) if end.byte_length() > 0 else now
-            took = fmt_duration(t1 - Int(start))
-        if s == "running" or ((s == "done" or s == "failed" or s == "stopped" or s == "died" or s == "ended")
-                              and exists(stage_file(d, i, "log"))):
+        var below = String("")  # an extra line under the stage: loss sparkline or last log line
+        if s == "running" or (has_ended(s) and exists(stage_file(d, i, "log"))):
             var p = parse_progress(read_text(stage_file(d, i, "log")))
             if p.total > 0:
                 var frac = Float64(p.cur) / Float64(p.total)
@@ -226,22 +221,19 @@ def render_run(name: String, now: Int, detail: Bool) raises -> String:
                         line += "  " + fmt_rate(p.rate)
                     if p.eta.byte_length() > 0:
                         line += "  eta " + p.eta
-                line += "  " + state_badge(s)
-                if took.byte_length() > 0:
-                    line += color("  " + took, "2")
+                line += "  "
                 if detail and len(p.losses) > 1:
-                    line += "\n  " + pad("", 12) + " " + color("loss " + sparkline(p.losses, 48), "2")
-            else:
-                line += state_badge(s)
-                if took.byte_length() > 0:
-                    line += color("  " + took, "2")
-                if detail and s == "running" and p.last.byte_length() > 0:
-                    var last = p.last if p.last.byte_length() <= 70 else String(p.last[byte=0:70]) + "…"
-                    line += "\n  " + pad("", 12) + " " + color(last, "2")
-        else:
-            line += state_badge(s)
-            if took.byte_length() > 0:
-                line += color("  " + took, "2")
+                    below = color("loss " + sparkline(p.losses, 48), "2")
+            elif detail and s == "running" and p.last.byte_length() > 0:
+                below = color(p.last if p.last.byte_length() <= 70 else String(p.last[byte=0:70]) + "…", "2")
+        line += state_badge(s)
+        var start = read_or(stage_file(d, i, "start"), "")
+        if start.byte_length() > 0:
+            var end = read_or(stage_file(d, i, "end"), "")
+            var t1 = Int(end) if end.byte_length() > 0 else now
+            line += color("  " + fmt_duration(t1 - Int(start)), "2")
+        if below.byte_length() > 0:
+            line += "\n  " + pad("", 12) + " " + below
         if s == "failed" or s == "died":
             line += color("  → ./psg logs " + name + " " + stages[i].name, "2")
         out += line + "\n"
@@ -376,25 +368,36 @@ def cmd_run(args: List[String], self_path: String) raises:
 
 
 def cmd_train(args: List[String], self_path: String) raises:
-    """One training run as a one-stage pipeline: psg train NAME -- <train_gpu flags>."""
+    """One training run as a one-stage pipeline: psg train NAME [--arch A] -- <train_gpu flags>.
+    The architecture defaults to the --resume checkpoint's, else ctx."""
     if len(args) < 1:
-        raise Error("usage: psg train <name> [--detach] -- --data <dir> [train_gpu flags]")
+        raise Error("usage: psg train <name> [--arch A] [--detach] -- --data <dir> [train_gpu flags]")
     var name = args[0]
+    var arch = String("")
     var flags = String("")
     var detach = False
     var passthrough = False
-    for i in range(1, len(args)):
+    var i = 1
+    while i < len(args):
         if passthrough:
+            if args[i] == "--resume" and i + 1 < len(args) and arch.byte_length() == 0:
+                arch = ckpt_arch(args[i + 1])
             flags += " " + q(args[i])
         elif args[i] == "--":
             passthrough = True
         elif args[i] == "--detach":
             detach = True
+        elif args[i] == "--arch" and i + 1 < len(args):
+            arch = args[i + 1]
+            i += 1
         else:
             flags += " " + q(args[i])
+        i += 1
+    if arch.byte_length() == 0:
+        arch = "ctx"
     var d = new_run_dir(name)
     var n = basename(d)
-    var text = "stage train\n  cmd ./train_gpu --out checkpoints/" + n + flags + "\n"
+    var text = "stage train\n  cmd " + tool_bin("train_gpu", arch) + " --out checkpoints/" + n + flags + "\n"
     launch(d, text, self_path, False)
     print("started", d, "→ checkpoints/" + n)
     if not detach:
@@ -469,7 +472,7 @@ def usage():
     print("""psg: pipelines for pixel-sprite-gen
 
   ./psg run <file.pipe> [--name N] [--detach]   start a pipeline, then watch it
-  ./psg train <name> [--detach] -- <train_gpu flags>
+  ./psg train <name> [--arch A] [--detach] -- <train_gpu flags>
                                                 one training run (checkpoints/<name>)
   ./psg status                                  all runs, once
   ./psg watch [name]                            live view (Ctrl-C detaches)

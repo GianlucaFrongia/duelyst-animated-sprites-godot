@@ -1,6 +1,6 @@
 # In-betweening on Duelyst + Hull Rupture: two keyframes in, the frame halfway between out.
 # Keyframe triples with gaps 2, 4 and 8, so a 9-frame sheet can be filled from its two ends.
-# Batch 64 (fastest on the M2 Pro); 2500 x 64 = 160k examples. No context dropout: the
+# Batch 64 (the fastest measured); 2500 x 64 = 160k examples. No context dropout: the
 # keyframes are always given.
 #     ./psg run pipelines/duelyst_hr_inbetween.pipe
 
