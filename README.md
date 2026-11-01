@@ -146,6 +146,7 @@ Each folder in `models/` is one architecture, and all it holds is `arch/variant.
 | `inbetween_sparse` | `inbetween` with the same band-sparse attention | 1,024 | keyframe triples |
 | `inbetween_dyt` | `inbetween_sparse` with DyT (Dynamic Tanh) in place of every layer norm | 1,024 | keyframe triples |
 | `inbetween_hilbert` | `inbetween_sparse` with tokens in Hilbert-curve order, so a band reaches as far up and down as sideways | 1,024 | keyframe triples |
+| `inbetween_dyt_hilbert` | `inbetween_hilbert` with DyT in place of every layer norm | 1,024 | keyframe triples |
 | `inbetween_crop` | `inbetween` running only the target tokens within 3 tokens of either keyframe's sprite (the rest of the frame is transparent), batches grouped by that count | ~570 on average (64–1,024) | keyframe triples |
 
 `ctx` keeps detail much better than `stacked` but mostly copies the previous frame: from one frame it can't tell which way a unit is moving. `ctx2` sees two frames and moves more, but still far less than real animations. `inbetween` sidesteps the ambiguity: you give the two ends of the motion (keyframes) and it draws the frames between, the way an animator's in-betweener does. A 9-frame sheet is filled by halving gaps: frame 4 from frames 0 and 8, then 2 and 6, then the odd frames:
