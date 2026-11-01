@@ -15,14 +15,14 @@ the generated output back into Godot `SpriteFrames`. The goal is prompts like:
 Image work and PyTorch run through Mojo's Python interop (`from std.python import Python`).
 The training math itself is musubi-tuner's PyTorch code, which Mojo launches.
 
-The `training/` folder has a `.gdignore`, so Godot won't import the dataset. It is
-also excluded from Asset Library downloads by `.gitattributes`.
+Run the scripts from the repository root. They read the sprites from the Godot
+project in `data/duelyst/` (`--root` points `export_dataset.mojo` elsewhere).
 
 ## 1. Setup (Linux + AMD ROCm recommended)
 
 ```bash
 python3 -m venv .venv && source .venv/bin/activate
-pip install -r training/requirements.txt          # Mojo + Pillow/NumPy/imageio
+pip install -r lora/requirements.txt          # Mojo + Pillow/NumPy/imageio
 
 # PyTorch: AMD (ROCm) build. Check pytorch.org for the current ROCm version.
 pip install torch torchvision --index-url https://download.pytorch.org/whl/rocm6.4
@@ -41,15 +41,15 @@ AMD notes:
 ## 2. Export the dataset
 
 ```bash
-mojo run training/export_dataset.mojo            # → training/dataset/
+mojo run lora/export_dataset.mojo            # → lora/dataset/
 ```
 
 Output (about 4,500 animations, ~520 MB, ~12 min):
 
 ```
-training/dataset/wan/videos/<unit>__<anim>.mp4 + .txt    512x512 clips, 9 fps
-training/dataset/flux/grids/<unit>__<anim>.png + .txt    frame grids, ≤1024 px
-training/dataset/metadata.jsonl                          one record per animation
+lora/dataset/wan/videos/<unit>__<anim>.mp4 + .txt    512x512 clips, 9 fps
+lora/dataset/flux/grids/<unit>__<anim>.png + .txt    frame grids, ≤1024 px
+lora/dataset/metadata.jsonl                          one record per animation
 ```
 
 How frames are prepared:
@@ -93,7 +93,7 @@ Download the files listed in musubi-tuner's [docs/wan.md](https://github.com/koh
 - T5 `models_t5_umt5-xxl-enc-bf16.pth`
 
 ```bash
-mojo run training/train_lora.mojo --model wan --musubi ~/musubi-tuner \
+mojo run lora/train_lora.mojo --model wan --musubi ~/musubi-tuner \
     --dit models/wan2.1_t2v_1.3B_bf16.safetensors \
     --vae models/wan_2.1_vae.safetensors \
     --t5 models/models_t5_umt5-xxl-enc-bf16.pth
@@ -111,7 +111,7 @@ Download the files listed in musubi-tuner's [docs/flux_2.md](https://github.com/
 - the Qwen3 4B text encoder (pass the first split file)
 
 ```bash
-mojo run training/train_lora.mojo --model flux2 --musubi ~/musubi-tuner \
+mojo run lora/train_lora.mojo --model flux2 --musubi ~/musubi-tuner \
     --dit models/flux2-klein-base-4b.safetensors \
     --vae models/ae.safetensors \
     --text-encoder models/qwen3-4b/model-00001-of-00002.safetensors
@@ -120,7 +120,7 @@ mojo run training/train_lora.mojo --model flux2 --musubi ~/musubi-tuner \
 Common options: `--epochs 16`, `--rank 32`, `--lr`, `--resolution`,
 `--fp8` (lower VRAM), `--blocks-to-swap N` (offload blocks to CPU RAM),
 `--skip-cache` (reuse cached latents/text), `--name`, `--work DIR`.
-LoRAs are saved to `training/lora_work/output/`, one per epoch.
+LoRAs are saved to `lora/lora_work/output/`, one per epoch.
 
 ## 4. Generate, then post-process
 
@@ -130,7 +130,7 @@ Generate with ComfyUI, or with musubi-tuner's own scripts, for example:
 cd ~/musubi-tuner
 python src/musubi_tuner/wan_generate_video.py --task t2v-1.3B \
     --dit ... --vae ... --t5 ... \
-    --lora_weight /path/to/training/lora_work/output/duelyst_wan.safetensors \
+    --lora_weight /path/to/lora/lora_work/output/duelyst_wan.safetensors \
     --video_size 512 512 --video_length 17 --fps 9 \
     --prompt "dlystsprite, pixel art sprite animation, attack animation, ice golem, fire element, flames, side view, facing right, plain dark gray background" \
     --save_path out/
@@ -140,13 +140,13 @@ Then convert the result to Godot assets:
 
 ```bash
 # Video. --factor = the integer upscale used in training (often 4-8 at 512 px).
-mojo run training/postprocess.mojo out/result.mp4 --name attack --factor 5
+mojo run lora/postprocess.mojo out/result.mp4 --name attack --factor 5
 
 # FLUX grid sheet
-mojo run training/postprocess.mojo out/sheet.png --grid 5x5 --factor 2 --name attack
+mojo run lora/postprocess.mojo out/sheet.png --grid 5x5 --factor 2 --name attack
 ```
 
-This writes the following to `training/generated/`:
+This writes the following to `lora/generated/`:
 - `attack_frames/`
 - a horizontal strip `attack.png`
 - `attack.tres`, a SpriteFrames resource pointing at `res://generated/attack.png`
