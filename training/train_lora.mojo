@@ -18,6 +18,11 @@
 #       --text-encoder models/qwen3-4b/model-00001-of-00002.safetensors
 #
 # Add --dry-run to only print the commands and write the dataset config.
+#
+# After `mojo run training/curate_dataset.mojo`:
+#   --curated      train on the deduplicated set, rare clusters repeated more
+#   --exemplars    train only on the cluster exemplars (short final pass; combine
+#                  with --network-weights to continue from the curated LoRA)
 
 from std.python import Python, PythonObject
 from std.sys import argv
@@ -84,6 +89,9 @@ def main() raises:
     var blocks_to_swap = 0
     var skip_cache = False
     var dry_run = False
+    var curated = False
+    var exemplars = False
+    var network_weights = String("")
 
     var args = argv()
     var i = 1
@@ -95,6 +103,10 @@ def main() raises:
             fp8 = True
         elif a == "--skip-cache":
             skip_cache = True
+        elif a == "--curated":
+            curated = True
+        elif a == "--exemplars":
+            exemplars = True
         else:
             if i + 1 >= len(args):
                 raise Error("missing value for " + a)
@@ -119,6 +131,7 @@ def main() raises:
             elif a == "--name": name = v
             elif a == "--optimizer": optimizer = v
             elif a == "--blocks-to-swap": blocks_to_swap = Int(v)
+            elif a == "--network-weights": network_weights = v
             else:
                 raise Error("unknown argument: " + a)
         i += 1
@@ -151,6 +164,7 @@ def main() raises:
     if vae != "": vae = String(path.abspath(vae))
     if t5 != "": t5 = String(path.abspath(t5))
     if text_encoder != "": text_encoder = String(path.abspath(text_encoder))
+    if network_weights != "": network_weights = String(path.abspath(network_weights))
 
     print("== Environment")
     if dry_run:
@@ -168,16 +182,44 @@ def main() raises:
     toml += 'caption_extension = ".txt"\nbatch_size = 1\nenable_bucket = true\n'
     # Never upscale the pixel art in the trainer (it would blur the pixel grid).
     toml += "bucket_no_upscale = true\n\n"
-    toml += "[[datasets]]\n"
-    if model == "wan":
-        toml += 'video_directory = "' + dataset_abs + '/wan/videos"\n'
-        toml += 'cache_directory = "' + work_abs + '/cache"\n'
-        # Use each whole clip, trimmed to Wan's 4n+1 frame counts.
-        toml += 'frame_extraction = "full"\n'
-        toml += "max_frames = " + String(max_frames) + "\n"
+    var media = String("video") if model == "wan" else String("image")
+    var tier_files = List[String]()
+    if curated or exemplars:
+        var cur_dir = dataset_abs + "/curation"
+        if not Bool(py=path.isdir(cur_dir)):
+            raise Error("no " + cur_dir + "; run training/curate_dataset.mojo first")
+        for f in Python.evaluate("sorted")(os.listdir(cur_dir)):
+            var fs = String(f)
+            var want = fs == media + "_exemplars.jsonl" if exemplars else (
+                fs.startswith(media + "_r") and fs.endswith(".jsonl"))
+            if want:
+                tier_files.append(fs)
+        if len(tier_files) == 0:
+            raise Error("no " + media + " lists in " + cur_dir + "; re-run curate_dataset.mojo")
+        for fs in tier_files:
+            # <media>_r3.jsonl -> num_repeats = 3; exemplars are used once.
+            var repeats = 1
+            if not exemplars:
+                repeats = Int(String(fs[byte = media.byte_length() + 2 : fs.byte_length() - 6]))
+            toml += "[[datasets]]\n"
+            toml += media + '_jsonl_file = "' + cur_dir + "/" + fs + '"\n'
+            toml += 'cache_directory = "' + work_abs + '/cache"\n'
+            toml += "num_repeats = " + String(repeats) + "\n"
+            if model == "wan":
+                toml += 'frame_extraction = "full"\n'
+                toml += "max_frames = " + String(max_frames) + "\n"
+            toml += "\n"
     else:
-        toml += 'image_directory = "' + dataset_abs + '/flux/grids"\n'
-        toml += 'cache_directory = "' + work_abs + '/cache"\n'
+        toml += "[[datasets]]\n"
+        if model == "wan":
+            toml += 'video_directory = "' + dataset_abs + '/wan/videos"\n'
+            toml += 'cache_directory = "' + work_abs + '/cache"\n'
+            # Use each whole clip, trimmed to Wan's 4n+1 frame counts.
+            toml += 'frame_extraction = "full"\n'
+            toml += "max_frames = " + String(max_frames) + "\n"
+        else:
+            toml += 'image_directory = "' + dataset_abs + '/flux/grids"\n'
+            toml += 'cache_directory = "' + work_abs + '/cache"\n'
     var toml_path = work_abs + "/dataset_" + model + ".toml"
     Python.evaluate("lambda p, s: open(p, 'w').write(s)")(toml_path, toml)
     print("\n== Dataset config written to", toml_path)
@@ -231,6 +273,9 @@ def main() raises:
         cmds[last].append(c)
     if fp8:
         cmds[last].append("--fp8_base")
+    if network_weights != "":
+        cmds[last].append("--network_weights")
+        cmds[last].append(network_weights)
     if blocks_to_swap > 0:
         cmds[last].append("--blocks_to_swap")
         cmds[last].append(String(blocks_to_swap))

@@ -9,6 +9,7 @@ the generated output back into Godot `SpriteFrames`. The goal is prompts like:
 | Script | What it does |
 |---|---|
 | `export_dataset.mojo` | Reads every `.tres` + spritesheet and writes Wan video clips, FLUX.2 grid sheets, captions and `metadata.jsonl` |
+| `curate_dataset.mojo` | Optional: removes near-duplicate clips, clusters the rest and sets per-cluster repeats |
 | `train_lora.mojo` | Checks PyTorch/GPU from Mojo, writes the musubi-tuner dataset config and runs caching + training |
 | `postprocess.mojo` | Generated video/sheet → downscaled, palette-quantized, background-removed frames + strip PNG + `.tres` |
 
@@ -81,6 +82,44 @@ tagged. Only ~100 clips get `fire`. For better prompt following, refine the
 `.txt` files: by hand, or with a vision model (musubi-tuner includes
 `caption_images_by_qwen_vl.py`).
 
+## 2b. Curate (optional, recommended)
+
+```bash
+mojo run training/curate_dataset.mojo            # → training/dataset/curation/
+```
+
+This follows the data recipe for image generation in
+[LongCat-Next](https://arxiv.org/abs/2603.27538) (Sec. 4.3). That paper found
+that training on raw data spends most of the model's capacity on the most common
+looks:
+
+1. **Embed** each clip with a cheap pixel-art descriptor: the mean thumbnail,
+   the motion map (frame differences) and a colour histogram. The paper uses
+   SigLIP2; here no model is needed (~40 s for the full set).
+2. **Deduplicate** within each action: a clip that is near-identical
+   (`--dup 0.985` cosine) to another *unit's* clip is dropped. On the full set
+   this finds ~25 copies, e.g. `zodiac`/`zodiac02` and `shadow2`/`crawler`.
+3. **Cluster** with k-means (`--clusters`, default √N ≈ 67).
+4. **Rebalance**: each clip is repeated `(largest cluster / its cluster)^alpha`
+   times (`--alpha 0.5`, `--max-repeats 4`). One-off looks are seen more often
+   per epoch. Repeat counts on the full set: x1 2311, x2 1884, x3 275, x4 50.
+5. **Exemplars**: the clip nearest each cluster centre, for a short final pass
+   on a small, diverse set.
+
+Captions are read from the `.txt` files when curation runs. If you refine
+captions later, re-run curation.
+
+Then train with `--curated`. An epoch is now ~7,100 samples instead of ~4,500,
+so you can lower `--epochs`. Optionally, finish with a short pass on the
+exemplars, continuing from the curated LoRA:
+
+```bash
+mojo run training/train_lora.mojo --model flux2 ... --curated --epochs 10
+mojo run training/train_lora.mojo --model flux2 ... --exemplars --epochs 4 \
+    --lr 5e-5 --name duelyst_flux2_ex \
+    --network-weights training/lora_work/output/duelyst_flux2.safetensors
+```
+
 ## 3. Train
 
 Start with `--dry-run` to see the config and exact commands without running anything.
@@ -119,7 +158,8 @@ mojo run training/train_lora.mojo --model flux2 --musubi ~/musubi-tuner \
 
 Common options: `--epochs 16`, `--rank 32`, `--lr`, `--resolution`,
 `--fp8` (lower VRAM), `--blocks-to-swap N` (offload blocks to CPU RAM),
-`--skip-cache` (reuse cached latents/text), `--name`, `--work DIR`.
+`--skip-cache` (reuse cached latents/text), `--name`, `--work DIR`,
+`--curated` / `--exemplars` (see 2b), `--network-weights FILE` (continue a LoRA).
 LoRAs are saved to `training/lora_work/output/`, one per epoch.
 
 ## 4. Generate, then post-process
