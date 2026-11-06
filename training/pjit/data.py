@@ -47,8 +47,10 @@ def text_cache_path(cache_dir: str, caption: str) -> str:
 
 
 def ensure_text_cache(captions: Sequence[str], cache_dir: str, encoder_path: str,
-                      device, batch_size: int = 16) -> None:
-    """Encode every caption not yet cached, then free the encoder."""
+                      device, batch_size: int = 1) -> None:
+    """Encode every caption not yet cached, then free the encoder. One caption per call by
+    default, as Linum's sampler encodes them: QwenTextEncoder trims padding assuming it is on
+    the right, so a padded batch is only safe with a right-padding tokenizer."""
     from safetensors.torch import save_file
 
     os.makedirs(cache_dir, exist_ok=True)
@@ -64,7 +66,9 @@ def ensure_text_cache(captions: Sequence[str], cache_dir: str, encoder_path: str
         for caption, emb in zip(chunk, encoder(chunk)):
             save_file({"emb": emb.to(torch.bfloat16).cpu().contiguous()},
                       text_cache_path(cache_dir, caption))
-        print(f"  {min(i + batch_size, len(todo))}/{len(todo)}")
+        done = min(i + batch_size, len(todo))
+        if done % 200 < batch_size or done == len(todo):
+            print(f"  {done}/{len(todo)}")
     del encoder
     gc.collect()
     if torch.cuda.is_available():

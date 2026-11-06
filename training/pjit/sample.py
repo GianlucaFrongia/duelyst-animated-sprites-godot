@@ -12,6 +12,7 @@ turns them into Godot frames (--grid CxR --factor <grid_scale>).
 """
 
 import argparse
+import gc
 import json
 import os
 import sys
@@ -43,17 +44,34 @@ def main():
     p.add_argument("--h100-noise", action="store_true",
                    help="draw noise as an H100 does (Linum's seeds; NVIDIA + Triton only)")
     p.add_argument("--attention", choices=["auto", "sdpa", "flash3"], default="auto")
+    p.add_argument("--bf16-weights", action="store_true",
+                   help="hold the DiT in bf16 (4.4 GB instead of 8.7 GB); tiny rounding changes")
     p.add_argument("--out-dir", default="training/pjit_out")
     args = p.parse_args()
 
     device = "cuda"
     set_attention_backend(args.attention)
+
+    # Encode every prompt first and free the 8 GB encoder before the DiT (8.7 GB in fp32)
+    # is loaded: both at once do not fit on a 16 GB card.
+    encoder = QwenTextEncoder(args.text_encoder, device=torch.device(device))
+    texts = list(dict.fromkeys(args.prompt + [args.negative_prompt]))
+    # One caption per call, as Linum's sampler does (no padding inside a batch).
+    cached = {t: encoder([t])[0] for t in texts}
+    del encoder
+    gc.collect()
+    torch.cuda.empty_cache()
+
     model = PyramidJiT.from_pretrained(args.weights, device="cpu")
     for path in args.lora:
         n = L.merge_lora_file(model, path, args.lora_strength)
         print(f"merged {n} LoRA layers from {path}")
+    if args.bf16_weights:
+        model = model.to(torch.bfloat16)
     model = model.to(device).eval()
-    encoder = QwenTextEncoder(args.text_encoder, device=torch.device(device))
+
+    def encoder(batch):
+        return [cached[t] for t in batch]
 
     noise = args.noise_scale or O.noise_scale_for(args.height, args.width, O.LossConfig())
     sampler = SamplerConfig(

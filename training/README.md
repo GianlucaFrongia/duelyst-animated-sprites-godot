@@ -190,6 +190,36 @@ Captions are encoded once and cached in `<out>/text_cache/`. The encoder is unlo
 never shares GPU memory with the DiT. On AMD, attention falls back to PyTorch SDPA automatically
 (FlashAttention-3 is Hopper-only).
 
+### On a 16 GB AMD card
+
+```bash
+pip install torch torchvision --index-url https://download.pytorch.org/whl/rocm6.4
+export HSA_OVERRIDE_GFX_VERSION=11.0.0   # RDNA3 cards ROCm doesn't list (10.3.0 for RDNA2)
+python training/pjit/train.py --dry-run  # prints GPU, data, model and loss plan; downloads nothing
+```
+
+What fits in 16 GB:
+
+| Job | GPU memory | 16 GB? |
+|---|---|---|
+| Caption caching (Qwen3.5-4B, bf16) | ~8 GB, runs alone before the DiT loads | yes |
+| LoRA fine-tune (default): bf16 base 4.4 GB + LoRA + checkpointed activations | ~7–10 GB at 1024² | yes |
+| Sampling (`sample.py`): prompts encoded first, encoder freed, then the fp32 DiT | ~10 GB | yes |
+| Scratch `tiny` / `small` (full AdamW) | ~1 / ~6 GB + activations | yes |
+| Scratch `base` (720M) | ~12 GB + activations | tight; `--force` |
+| Full fine-tune (`--lora-rank 0`) or scratch `pjit` (2.18B) | 40 GB+ | no; the script stops early |
+
+AMD notes:
+- FlashAttention-3 is NVIDIA Hopper only. Attention uses PyTorch SDPA (a warning says so once).
+- Sample noise uses the GPU's own `torch.randn`. `--h100-noise`, which reproduces Linum's
+  exact seeds, needs NVIDIA plus Triton. The same seed gives a different image, but quality is unaffected.
+- P-JiT runs under bf16 autocast. RDNA3 supports bf16. On RDNA2 the script warns if
+  PyTorch reports no bf16 support.
+- If you still run out of memory, lower `--max-side` (e.g. 768) to skip the largest
+  sheets, or re-export with `--grid-max 768`.
+- LoRA training at 1024² on a 16 GB card is slow. Expect several seconds per image. A first
+  run of `--epochs 2` (about 9k images) is a good test of whether the LoRA is learning.
+
 ### Fine-tune the released P-JiT 21K (recommended)
 
 Train on the spritesheet grids from step 2 (any folder of `<id>.png` + `<id>.txt` works):

@@ -120,6 +120,7 @@ def parse_args():
     g.add_argument("--sample-steps", type=int, default=30)
     g.add_argument("--sample-guidance", type=float, default=7.5)
     g.add_argument("--dry-run", action="store_true", help="build everything, print the plan, exit")
+    g.add_argument("--force", action="store_true", help="skip the GPU memory check")
     return p.parse_args()
 
 
@@ -155,7 +156,9 @@ def build_model(args, device):
         if device.type == "meta":   # dry run: the released architecture, no weights
             with torch.device("meta"):
                 return PyramidJiT(PyramidJiTConfig())
-        return PyramidJiT.from_pretrained(args.weights, device="cpu").to(device)
+        # Stays on the CPU: main() casts the frozen base to bf16 before moving it, so the
+        # 8.7 GB fp32 copy never lands on a 16 GB card.
+        return PyramidJiT.from_pretrained(args.weights, device="cpu")
     cfg = dict(PRESETS[args.preset])
     if args.patch:
         cfg["patch"] = (1, args.patch, args.patch)
@@ -169,7 +172,34 @@ def build_model(args, device):
         model = PyramidJiT(config)
     if device.type != "meta":
         init_scratch_weights(model)
-    return model.to(device)
+    return model
+
+
+def check_memory(args, device, scratch, use_lora):
+    """Report the GPU and stop early on setups that cannot fit, instead of failing with an
+    out-of-memory error after the downloads."""
+    if device.type != "cuda":
+        return
+    props = torch.cuda.get_device_properties(device)
+    gb = props.total_memory / 1024 ** 3
+    backend = f"ROCm {torch.version.hip}" if torch.version.hip else f"CUDA {torch.version.cuda}"
+    print(f"GPU: {props.name}, {gb:.1f} GB ({backend})")
+    if not torch.cuda.is_bf16_supported():
+        print("WARNING: this GPU reports no bf16 support; P-JiT trains under bf16 autocast. "
+              "On RDNA2 try a recent ROCm build; RDNA3 and newer support bf16.")
+    if args.force:
+        return
+    need = None
+    if not scratch and not use_lora:
+        need = 40   # 2.18B fp32 weights + grads + AdamW moments
+    elif scratch and args.preset == "pjit":
+        need = 40
+    elif scratch and args.preset == "base":
+        need = 20   # 720M x 16 bytes for weights, grads and AdamW, plus activations
+    if need and gb < need:
+        sys.exit(f"This setup needs roughly {need} GB of GPU memory; this GPU has {gb:.0f} GB. "
+                 "Use the default LoRA fine-tune (--lora-rank 32) or --init scratch --preset "
+                 "small, or pass --force to try anyway.")
 
 
 def enable_grad_checkpointing(model):
@@ -331,6 +361,14 @@ def main():
     print(f"Plan: {total_steps} optimizer steps (batch {args.batch_size} x accum {args.grad_accum}), "
           f"lr {lr}, warmup {warmup}, EMA half-life {half_life or 'off'}")
 
+    check_memory(args, device, scratch, use_lora)
+
+    # ---- captions ----
+    # Encoded before the DiT is built, so the 8 GB Qwen3.5-4B encoder has the GPU to itself.
+    captions = [it["caption"] for it in items] + args.sample_prompt + ([""] if args.sample_prompt else [])
+    if not args.dry_run:
+        D.ensure_text_cache(captions, args.text_cache, args.text_encoder, device)
+
     # ---- model ----
     # A dry run builds the model on the meta device: no download, no memory.
     model = build_model(args, torch.device("meta") if args.dry_run else device)
@@ -338,9 +376,11 @@ def main():
     for p in model.parameters():
         p.requires_grad_(not use_lora)
     lora_cfg = None
+    if use_lora and args.base_dtype == "bf16" and device.type == "cuda":
+        model.to(torch.bfloat16)          # on the CPU: 4.4 GB of frozen weights to move
+    if not args.dry_run:
+        model.to(device)
     if use_lora:
-        if args.base_dtype == "bf16" and device.type == "cuda":
-            model.to(torch.bfloat16)
         alpha = args.lora_alpha or float(args.lora_rank)
         trainable = L.inject_lora(model, args.lora_rank, alpha)
         lora_cfg = dict(rank=args.lora_rank, alpha=alpha, scopes=L.DEFAULT_SCOPES, targets=L.DEFAULT_TARGETS)
@@ -381,12 +421,9 @@ def main():
           f"timestep phases {phases}, noise scale "
           f"{args.noise_scale or 'auto (%.2f at %dx%d)' % (O.noise_scale_for(*sample_hw, loss_cfg), *sample_hw)}")
 
-    # ---- captions ----
-    captions = [it["caption"] for it in items] + args.sample_prompt + ([""] if args.sample_prompt else [])
     if args.dry_run:
         print("Dry run: nothing trained.")
         return
-    D.ensure_text_cache(captions, args.text_cache, args.text_encoder, device)
 
     optimizer = torch.optim.AdamW(trainable + extra_params, lr=lr, betas=tuple(args.betas),
                                   weight_decay=args.weight_decay)
