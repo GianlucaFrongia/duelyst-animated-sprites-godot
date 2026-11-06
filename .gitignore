@@ -6,3 +6,7 @@
 training/dataset/
 training/lora_work/
 training/generated/
+training/pjit_work/
+training/pjit_scratch/
+training/pjit_out/
+__pycache__/
