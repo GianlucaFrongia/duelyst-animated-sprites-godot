@@ -242,13 +242,29 @@ python training/pjit/train.py --data training/dataset/flux/grids \
 
 ### Train the architecture from scratch
 
+A fresh model learns whatever text features it is given, so it doesn't need Linum's 4B encoder.
+The default is **Qwen3.5-0.8B** (about 1.6 GB). Any Qwen3.5 size works with `--text-encoder`.
+The trainer reads the encoder's config and taps three full-attention layers at the depths Linum used
+(22 %, 47 % and 84 %). It sets the model's text width to match and records the encoder in the saved
+`config.json`, so `sample.py` picks the same one. Each encoder gets its own caption cache
+(`<out>/text_cache/<encoder>_L<layers>/`).
+
+For a 16 GB card, export smaller sheets at the sprites' native pixel size. Most units fit a 128 px
+cell at 1x, so the model sees every art pixel once and a 512² sheet is only 1,024 tokens at patch 16:
+
 ```bash
+mojo run training/export_dataset.mojo --out training/dataset_small --no-video \
+    --grid-max 512 --cell-size 128
 python training/pjit/train.py --init scratch --preset small \
-    --data training/dataset/flux/grids --out training/pjit_scratch --max-steps 50000 \
-    --batch-size 8 --grad-accum 1 --pixel-repa --lpips
+    --data training/dataset_small/flux/grids --out training/pjit_scratch \
+    --max-steps 30000 --batch-size 4 --grad-accum 2 \
+    --sample-prompt "dlystsprite, pixel art spritesheet, 3x3 grid of 9 animation frames, read left to right, top to bottom, attack animation, firebreather, abyssian, fire element, flames, side view, facing right, plain dark gray background"
+python training/pjit/sample.py --weights training/pjit_scratch/output/duelyst_pjit-step030000 \
+    --height 512 --width 512 --guidance 5 --prompt "dlystsprite, ..."
 ```
 
-This trains the full Pyramid-JiT objective, with the readout heads on by default. EMA defaults
+This trains the full Pyramid-JiT objective, with the readout heads on by default
+(`--pixel-repa`, `--lpips` and `--pdino` add the DINOv3 / LPIPS terms if `timm` / `lpips` are installed). EMA defaults
 to a half-life of 3 % of the run (Linum used 3,907 of ~135k steps). The first 36 % of steps use
 noise-heavy timesteps, as in Linum's first 50M of 138M samples.
 

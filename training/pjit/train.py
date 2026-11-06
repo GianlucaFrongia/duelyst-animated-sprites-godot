@@ -59,8 +59,11 @@ def parse_args():
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     g = p.add_argument_group("data")
     g.add_argument("--data", default="training/dataset/flux/grids", help="folder of <id>.png + <id>.txt")
-    g.add_argument("--text-cache", default=None, help="caption embedding cache (default <out>/text_cache)")
-    g.add_argument("--text-encoder", default="Qwen/Qwen3.5-4B")
+    g.add_argument("--text-cache", default=None,
+                   help="caption embedding cache (default <out>/text_cache/<encoder>)")
+    g.add_argument("--text-encoder", default=None,
+                   help="Qwen3.5 model for captions. Pretrained: must be Qwen/Qwen3.5-4B (the "
+                        "default). Scratch: any Qwen3.5 size, default Qwen/Qwen3.5-0.8B")
     g.add_argument("--max-side", type=int, default=1280, help="skip images with a longer side")
     g.add_argument("--workers", type=int, default=2)
 
@@ -151,7 +154,7 @@ def init_scratch_weights(model: PyramidJiT):
     nn.init.zeros_(model.head.proj.bias)
 
 
-def build_model(args, device):
+def build_model(args, device, text_layers, text_dim):
     if args.init == "pretrained":
         if device.type == "meta":   # dry run: the released architecture, no weights
             with torch.device("meta"):
@@ -165,6 +168,8 @@ def build_model(args, device):
     # Linum's 0.5 RoPE scale comes from moving a 512px model to 1024px (Position
     # Interpolation); a model trained from scratch uses plain integer positions.
     cfg["rope_spatial_scale"] = 1.0
+    cfg["text_layers"] = tuple(text_layers)
+    cfg["text_dim"] = text_dim
     config = PyramidJiTConfig(**cfg)
     if config.dim % config.num_heads or (config.dim // config.num_heads) % 2:
         raise ValueError("dim must split into an even head_dim")
@@ -266,7 +271,8 @@ def save_weights(args, model, ema, step, lora_cfg):
             state = {k: v.detach().float().cpu().contiguous() for k, v in model.state_dict().items()}
             save_file(state, os.path.join(path, "model.safetensors"))
             with open(os.path.join(path, "config.json"), "w") as fh:
-                json.dump({"architecture": model.config.to_dict()}, fh, indent=2)
+                json.dump({"architecture": model.config.to_dict(),
+                           "text_encoder": args.text_encoder}, fh, indent=2)
     finally:
         if ema is not None:
             ema.swap_out()
@@ -330,8 +336,25 @@ def main():
         print("WARNING: no GPU visible to PyTorch; running on CPU (only useful for --preset tiny tests).")
     set_attention_backend(args.attention)
     os.makedirs(args.out, exist_ok=True)
-    args.text_cache = args.text_cache or os.path.join(args.out, "text_cache")
     scratch = args.init == "scratch"
+    if args.text_encoder is None:
+        args.text_encoder = "Qwen/Qwen3.5-0.8B" if scratch else D.LINUM_ENCODER
+    if not scratch and os.path.basename(args.text_encoder.rstrip("/")) != "Qwen3.5-4B":
+        sys.exit("The released P-JiT weights only understand Qwen3.5-4B features; a smaller "
+                 "encoder works only with --init scratch.")
+    if scratch:
+        try:
+            text_layers, text_dim = D.encoder_layout(args.text_encoder)
+        except Exception as exc:   # dry run offline: show the plan with Linum's layout
+            if not args.dry_run:
+                raise
+            print(f"(could not read {args.text_encoder} config: {exc}; showing the 4B layout)")
+            text_layers, text_dim = D.LINUM_LAYERS, D.TEXT_DIM
+    else:
+        text_layers, text_dim = D.LINUM_LAYERS, D.TEXT_DIM
+    print(f"Text: {args.text_encoder}, layers {list(text_layers)} -> {text_dim} features per token")
+    args.text_cache = args.text_cache or os.path.join(
+        args.out, "text_cache", D.encoder_slug(args.text_encoder, text_layers))
     use_lora = not scratch and args.lora_rank > 0
 
     # ---- data ----
@@ -367,11 +390,13 @@ def main():
     # Encoded before the DiT is built, so the 8 GB Qwen3.5-4B encoder has the GPU to itself.
     captions = [it["caption"] for it in items] + args.sample_prompt + ([""] if args.sample_prompt else [])
     if not args.dry_run:
-        D.ensure_text_cache(captions, args.text_cache, args.text_encoder, device)
+        D.ensure_text_cache(captions, args.text_cache, args.text_encoder, device,
+                            layers=text_layers)
 
     # ---- model ----
     # A dry run builds the model on the meta device: no download, no memory.
-    model = build_model(args, torch.device("meta") if args.dry_run else device)
+    model = build_model(args, torch.device("meta") if args.dry_run else device,
+                        text_layers, text_dim)
     model.train()
     for p in model.parameters():
         p.requires_grad_(not use_lora)

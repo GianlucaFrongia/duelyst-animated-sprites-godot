@@ -18,6 +18,39 @@ import torch
 from PIL import Image
 
 TEXT_DIM = 7680
+LINUM_ENCODER = "Qwen/Qwen3.5-4B"
+LINUM_LAYERS = (7, 15, 27)
+
+
+def encoder_layout(encoder_path: str) -> Tuple[Tuple[int, ...], int]:
+    """Which hidden layers to tap and the resulting feature width for a Qwen3.5 encoder.
+
+    Linum taps layers 7, 15 and 27 of Qwen3.5-4B's 32 (at 22 %, 47 % and 84 % of the depth)
+    and concatenates them: 3 x 2560 = 7680. For another size this picks the full-attention
+    layers nearest those depths (Qwen3.5 mixes full attention with linear-attention layers,
+    and only full-attention layers are accepted by the encoder). Returns (layers, text_dim).
+    """
+    from transformers import AutoConfig
+
+    config = AutoConfig.from_pretrained(encoder_path)
+    text_config = getattr(config, "text_config", config)
+    hidden = text_config.hidden_size
+    types = list(text_config.layer_types)
+    full = [i for i, kind in enumerate(types) if kind == "full_attention"]
+    if os.path.basename(encoder_path.rstrip("/")) == "Qwen3.5-4B":
+        layers = LINUM_LAYERS
+    else:
+        layers, n = [], len(types)
+        for frac in (7 / 32, 15 / 32, 27 / 32):
+            pick = min((i for i in full if i not in layers), key=lambda i: abs(i - frac * n))
+            layers.append(pick)
+        layers = tuple(sorted(layers))
+    return layers, len(layers) * hidden
+
+
+def encoder_slug(encoder_path: str, layers: Sequence[int]) -> str:
+    name = os.path.basename(encoder_path.rstrip("/")) or "encoder"
+    return f"{name}_L{'-'.join(str(i) for i in layers)}"
 
 
 def caption_key(caption: str) -> str:
@@ -47,7 +80,8 @@ def text_cache_path(cache_dir: str, caption: str) -> str:
 
 
 def ensure_text_cache(captions: Sequence[str], cache_dir: str, encoder_path: str,
-                      device, batch_size: int = 1) -> None:
+                      device, batch_size: int = 1,
+                      layers: Sequence[int] = LINUM_LAYERS) -> None:
     """Encode every caption not yet cached, then free the encoder. One caption per call by
     default, as Linum's sampler encodes them: QwenTextEncoder trims padding assuming it is on
     the right, so a padded batch is only safe with a right-padding tokenizer."""
@@ -60,7 +94,7 @@ def ensure_text_cache(captions: Sequence[str], cache_dir: str, encoder_path: str
     print(f"Encoding {len(todo)} captions with {encoder_path} -> {cache_dir}")
     from pjit_21k import QwenTextEncoder
 
-    encoder = QwenTextEncoder(encoder_path, device=device)
+    encoder = QwenTextEncoder(encoder_path, extraction_layers=tuple(layers), device=device)
     for i in range(0, len(todo), batch_size):
         chunk = todo[i:i + batch_size]
         for caption, emb in zip(chunk, encoder(chunk)):

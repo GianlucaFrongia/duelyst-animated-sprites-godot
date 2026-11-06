@@ -32,7 +32,8 @@ def main():
     p.add_argument("--weights", default="Linum-AI/pjit-21k", help="HF id or a directory saved by train.py")
     p.add_argument("--lora", action="append", default=[], help="LoRA .safetensors to merge (repeatable)")
     p.add_argument("--lora-strength", type=float, default=1.0)
-    p.add_argument("--text-encoder", default="Qwen/Qwen3.5-4B")
+    p.add_argument("--text-encoder", default=None,
+                   help="default: the one recorded in the weights' config.json (else Qwen3.5-4B)")
     p.add_argument("--prompt", action="append", required=True)
     p.add_argument("--negative-prompt", default="")
     p.add_argument("--seeds", type=int, nargs="+", default=[0])
@@ -54,7 +55,17 @@ def main():
 
     # Encode every prompt first and free the 8 GB encoder before the DiT (8.7 GB in fp32)
     # is loaded: both at once do not fit on a 16 GB card.
-    encoder = QwenTextEncoder(args.text_encoder, device=torch.device(device))
+    # Use the encoder and layers the model was trained with (recorded by train.py).
+    text_encoder, layers = args.text_encoder, (7, 15, 27)
+    cfg_path = os.path.join(args.weights, "config.json")
+    if os.path.isfile(cfg_path):
+        with open(cfg_path) as fh:
+            saved = json.load(fh)
+        layers = tuple(saved["architecture"].get("text_layers", layers))
+        text_encoder = text_encoder or saved.get("text_encoder")
+    text_encoder = text_encoder or "Qwen/Qwen3.5-4B"
+    print(f"text encoder {text_encoder}, layers {list(layers)}")
+    encoder = QwenTextEncoder(text_encoder, extraction_layers=layers, device=torch.device(device))
     texts = list(dict.fromkeys(args.prompt + [args.negative_prompt]))
     # One caption per call, as Linum's sampler does (no padding inside a batch).
     cached = {t: encoder([t])[0] for t in texts}
